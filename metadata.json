@@ -1,0 +1,1 @@
+{"name":"Fine Art Print Analyzer","description":"Identify artists, print titles, printing techniques, auction valuation estimates, and condition notes from photos of fine art prints.","requestFramePermissions":[],"majorCapabilities":["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]}

@@ -1,0 +1,67 @@
+@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;0,600;0,700;1,300;1,400&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-serif: "Cormorant Garamond", ui-serif, Georgia, serif;
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+
+  /* Roseberys-inspired Luxury Light Palette */
+  --color-rosebery-primary: #4C0B2A; /* Signature Deep Claret Burgundy */
+  --color-rosebery-primary-hover: #66103A;
+  --color-rosebery-gold: #C0AA84;    /* Fine Champagne Gold */
+  --color-rosebery-gold-hover: #D0BE9D;
+  --color-rosebery-charcoal: #1C1115; /* Crisp readable charcoal for display text */
+  --color-rosebery-text-normal: #3E3238; /* Body text color */
+  --color-rosebery-cream-bg: #FAF8F5; /* Main light-theme canvas */
+  --color-rosebery-card: #FFFFFF;    /* Pure white paper sheets */
+  --color-rosebery-border: #E8E2D7;  /* High-end framing mat line */
+  --color-rosebery-muted: #7A6C71;   /* Tertiary label text */
+  
+  --color-rosebery-sage: #F4F6F2;     /* Softer curation backdrop */
+  --color-rosebery-sage-border: #D1DCCF; /* Softer curation border */
+  
+  --shadow-gallery-soft: 0 1px 2px rgba(28, 17, 21, 0.04), 0 4px 12px rgba(28, 17, 21, 0.03);
+  --shadow-gallery-deep: 0 4px 6px rgba(28, 17, 21, 0.02), 0 16px 24px rgba(28, 17, 21, 0.06);
+}
+
+@utility animate-fadeIn {
+  animation: fadeIn 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media print {
+  /* Hide all screen elements during printing */
+  body * {
+    visibility: hidden;
+  }
+  
+  /* Show only the printable certificate container and its content */
+  .certificate-print-container,
+  .certificate-print-container * {
+    visibility: visible;
+  }
+
+  /* Position certificate container to cover the page */
+  .certificate-print-container {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+    display: flex !important; /* Force flex display when printing */
+  }
+
+  /* Reset standard print dimensions */
+  @page {
+    size: portrait;
+    margin: 1.2cm 1.5cm;
+  }
+}
+
