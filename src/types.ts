@@ -40,6 +40,13 @@ export interface PrintAnalysisReport {
   signatureAnalysis?: string; // Appraiser's transcription and authentication analysis of the uploaded signature
   damageAnalysis?: string; // Close-up analysis regarding paper tears, foxing, acidity or pigment preservation
   editionSizeAndPrintNumber?: string; // Verified printing number and overall edition details (e.g., "45 / 100", "Artists Proof", "Unlimited Open Edition")
+  visualEvidenceHighlights?: VisualEvidenceHighlight[];
+}
+
+export interface VisualEvidenceHighlight {
+  label: string;
+  observation: string;
+  box_2d: number[]; // [ymin, xmin, ymax, xmax] coordinates from 0 to 1000
 }
 
 export interface RecentSale {
@@ -63,4 +70,14 @@ export interface AnalysisHistoryItem {
   report: PrintAnalysisReport;
   lotNumber?: string; // e.g. "Lot 101"
   lotTitle?: string;  // e.g. "Post-war Prints"
+  signatureImageUrl?: string;
+  damageImageUrl?: string;
+  scaleImageUrl?: string;
 }
+
+export interface CatalogMetadata {
+  id: string;
+  name: string;
+  timestamp: string;
+}
+

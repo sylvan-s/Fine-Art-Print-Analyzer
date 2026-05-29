@@ -1,13 +1,29 @@
 import express from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
-import { GoogleGenAI, Type } from "@google/genai";
+import { GoogleGenAI, Type, HarmCategory, HarmBlockThreshold } from "@google/genai";
 import dotenv from "dotenv";
+import fs from "fs";
+import crypto from "crypto";
 
 dotenv.config();
 
 const app = express();
 const PORT = 3000;
+
+const DATA_DIR = path.join(process.cwd(), "data");
+const USER_RECORDS_DIR = path.join(DATA_DIR, "user_records");
+const USERS_FILE = path.join(DATA_DIR, "users.json");
+
+if (!fs.existsSync(DATA_DIR)) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+}
+if (!fs.existsSync(USER_RECORDS_DIR)) {
+  fs.mkdirSync(USER_RECORDS_DIR, { recursive: true });
+}
+if (!fs.existsSync(USERS_FILE)) {
+  fs.writeFileSync(USERS_FILE, JSON.stringify([]));
+}
 
 // Set up large JSON body limits for handling Base64 photo uploads
 app.use(express.json({ limit: "25mb" }));
@@ -151,6 +167,12 @@ ${damageBase64 ? "- A close-up detail showcasing potential physical paper damage
 ${scaleBase64 ? "- A coin measurement scale calibration image. Place your focus on the standard coin adjacent to the artwork to mathematically estimate real-world sheet dimensions." : ""}
 
 ${userNotes ? `The user provided the following additional notes or inscriptions: "${userNotes}"` : ""}
+
+CURATOR EVIDENCE EXTRACTION MANDATE (CRITICAL):
+You MUST detect and locate 2 to 4 key visual evidence points in the primary print scan that back up your textual observations.
+In particular, check if an artist signature, monogram, publisher stamp, or edition number (e.g. '45/100') is present on the sheet (either in the lower paper margin or within the print design itself). If present, you MUST include its coordinate box as one of the evidence points with the label 'Signature Detail' or 'Edition Number'.
+Other evidence points can include print plate borders, chemical foxing/staining spots, margins/watermarks, or fine ink texture details indicating the printmaking technique.
+For each point, return a normalized bounding box \`box_2d\` in \`[ymin, xmin, ymax, xmax]\` format on a scale of \`0\` to \`1000\` (where 0 is top/left, 1000 is bottom/right relative to the primary scan's overall height and width). Along with the box, provide a short 2-3 word \`label\` naming the feature and a concise \`observation\` sentence explaining what is visible in that cropped region to justify your appraisal. Place this array in \`visualEvidenceHighlights\`.
 
 Conduct a meticulous evaluation of the authenticity factors (ink ridges, plate borders, chain lines, chemical foxing degradation) using the scholarly valuation guidelines above. Ensure you fill in the requested analytic parameters.`;
 
@@ -341,13 +363,37 @@ Conduct a meticulous evaluation of the authenticity factors (ink ridges, plate b
         editionSizeAndPrintNumber: {
           type: Type.STRING,
           description: "Details regarding the print number and global edition size (e.g. 'Pencil-numbered 45 / 150 of a limited run print edition; high collection value. Hand-signed in graphite by the artist.'). Offer typical or historical edition expectations if custom handwriting details are not fully visible."
+        },
+        visualEvidenceHighlights: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              label: {
+                type: Type.STRING,
+                description: "Name of the visual evidence feature, e.g. 'Signature Detail', 'Foxing Stain', 'Paper Watermark', 'Cross-Hatching Lines'."
+              },
+              observation: {
+                type: Type.STRING,
+                description: "A short descriptive observation backing up what is seen in this crop."
+              },
+              box_2d: {
+                type: Type.ARRAY,
+                items: { type: Type.INTEGER },
+                description: "Normalized bounding box coordinates [ymin, xmin, ymax, xmax] from 0 to 1000 relative to the overall print scan."
+              }
+            },
+            required: ["label", "observation", "box_2d"]
+          },
+          description: "A collection of 2 to 4 visual evidence highlights cropped from the primary scan."
         }
       },
       required: [
         "likelyArtist", "artistConfidence", "artworkTitle", "titleConfidence", "creationPeriod",
         "techniques", "auctionEstimate", "conditionNotes", "visualDescription", "historicalContext",
         "nextSteps", "isLikelyReproductionOrPoster", "reproductionExplanation", "recentAuctionSales",
-        "inferredDimensions", "signatureAnalysis", "damageAnalysis", "editionSizeAndPrintNumber"
+        "inferredDimensions", "signatureAnalysis", "damageAnalysis", "editionSizeAndPrintNumber",
+        "visualEvidenceHighlights"
       ]
     };
 
@@ -358,6 +404,24 @@ Conduct a meticulous evaluation of the authenticity factors (ink ridges, plate b
         responseMimeType: "application/json",
         responseSchema: responseSchema,
         temperature: 0.15,
+        safetySettings: [
+          {
+            category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+            threshold: HarmBlockThreshold.BLOCK_NONE
+          },
+          {
+            category: HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+            threshold: HarmBlockThreshold.BLOCK_NONE
+          },
+          {
+            category: HarmCategory.HARM_CATEGORY_HARASSMENT,
+            threshold: HarmBlockThreshold.BLOCK_NONE
+          },
+          {
+            category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+            threshold: HarmBlockThreshold.BLOCK_NONE
+          }
+        ]
       },
     });
 
@@ -479,7 +543,679 @@ ${itemsDescription}`;
   }
 });
 
+// List files in a local folder
+app.post("/api/list-local-directory", async (req, res) => {
+  try {
+    const { dirPath } = req.body;
+    if (!dirPath) {
+      return res.status(400).json({ error: "Missing directory path parameter." });
+    }
+
+    const resolvedPath = path.resolve(dirPath);
+    if (!fs.existsSync(resolvedPath)) {
+      return res.status(404).json({ error: "Directory does not exist." });
+    }
+
+    const stat = fs.statSync(resolvedPath);
+    if (!stat.isDirectory()) {
+      return res.status(400).json({ error: "Path specified is not a directory." });
+    }
+
+    const files = fs.readdirSync(resolvedPath);
+    const imageFiles = files
+      .filter((file) => {
+        const ext = path.extname(file).toLowerCase();
+        return [".png", ".jpg", ".jpeg", ".webp"].includes(ext);
+      })
+      .map((file) => {
+        const filePath = path.join(resolvedPath, file);
+        const fileStat = fs.statSync(filePath);
+        return {
+          name: file,
+          fullPath: filePath,
+          size: fileStat.size,
+          ext: path.extname(file).toLowerCase(),
+        };
+      });
+
+    return res.json({ success: true, dirPath: resolvedPath, files: imageFiles });
+  } catch (error: any) {
+    console.error("Failed to read local directory:", error);
+    return res.status(500).json({ error: error.message || "Failed to read directory." });
+  }
+});
+
+// Fetch local file content as Base64
+app.post("/api/get-local-file", async (req, res) => {
+  try {
+    const { filePath } = req.body;
+    if (!filePath) {
+      return res.status(400).json({ error: "Missing file path parameter." });
+    }
+
+    const resolvedPath = path.resolve(filePath);
+    if (!fs.existsSync(resolvedPath)) {
+      return res.status(404).json({ error: "File does not exist." });
+    }
+
+    const ext = path.extname(resolvedPath).toLowerCase();
+    let mimeType = "image/jpeg";
+    if (ext === ".png") mimeType = "image/png";
+    if (ext === ".webp") mimeType = "image/webp";
+
+    const content = fs.readFileSync(resolvedPath);
+    const base64 = content.toString("base64");
+
+    return res.json({
+      success: true,
+      fileName: path.basename(resolvedPath),
+      mimeType,
+      size: content.length,
+      base64: `data:${mimeType};base64,${base64}`,
+    });
+  } catch (error: any) {
+    console.error("Failed to read local file:", error);
+    return res.status(500).json({ error: error.message || "Failed to read file." });
+  }
+});
+
+// Detect if image contains multiple distinct artworks
+app.post("/api/detect-artworks", async (req, res) => {
+  try {
+    const { imageBase64, mimeType } = req.body;
+    if (!imageBase64) {
+      return res.status(400).json({ error: "Missing uploaded image content." });
+    }
+
+    const ai = getAiClient();
+    const cleanBase64 = imageBase64.replace(/^data:image\/\w+;base64,/, "");
+    const cleanMimeType = mimeType || "image/jpeg";
+
+    const parts = [
+      {
+        inlineData: {
+          data: cleanBase64,
+          mimeType: cleanMimeType,
+        },
+      },
+      {
+        text: `Analyze this image scan. Determine if it contains multiple distinct artwork pieces, fine art prints, or paintings (e.g. a collage, multiple separate print sheets scanned or photographed together on a single background or scanner bed).
+        
+If the image contains multiple distinct artworks, identify the bounding box for each individual artwork.
+If the image contains only a single artwork, return containsMultipleArtworks as false and provide a single bounding box for the entire image: [0, 0, 1000, 1000] representing the whole scan.
+
+Coordinates MUST be normalized to a 0 to 1000 scale, formatted as [ymin, xmin, ymax, xmax] relative to the overall image height and width.`,
+      },
+    ];
+
+    const responseSchema = {
+      type: Type.OBJECT,
+      properties: {
+        containsMultipleArtworks: {
+          type: Type.BOOLEAN,
+          description: "True if there are multiple separate prints or distinct artworks visible in the single scan."
+        },
+        artworks: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              label: {
+                type: Type.STRING,
+                description: "Label for this artwork item, e.g. 'Artwork A', 'Artwork B'."
+              },
+              box_2d: {
+                type: Type.ARRAY,
+                items: { type: Type.INTEGER },
+                description: "Normalized bounding box coordinates [ymin, xmin, ymax, xmax] from 0 to 1000."
+              }
+            },
+            required: ["label", "box_2d"]
+          },
+          description: "Bounding boxes enclosing each detected artwork."
+        }
+      },
+      required: ["containsMultipleArtworks", "artworks"]
+    };
+
+    const response = await ai.models.generateContent({
+      model: "gemini-3.5-flash",
+      contents: { parts },
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: responseSchema,
+        temperature: 0.1,
+        safetySettings: [
+          {
+            category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+            threshold: HarmBlockThreshold.BLOCK_NONE
+          },
+          {
+            category: HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+            threshold: HarmBlockThreshold.BLOCK_NONE
+          },
+          {
+            category: HarmCategory.HARM_CATEGORY_HARASSMENT,
+            threshold: HarmBlockThreshold.BLOCK_NONE
+          },
+          {
+            category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+            threshold: HarmBlockThreshold.BLOCK_NONE
+          }
+        ]
+      },
+    });
+
+    const textOutput = response.text;
+    if (!textOutput) {
+      throw new Error("No output received from Gemini detection.");
+    }
+
+    const detection = JSON.parse(textOutput.trim());
+    return res.json(detection);
+  } catch (error: any) {
+    console.error("Gemini artwork detection failed:", error);
+    return res.status(500).json({
+      error: error.message || "An unexpected error occurred during artwork detection.",
+    });
+  }
+});
+
 // ----------------------------------------
+// USER ACCOUNTS & PERSISTENCE ENDPOINTS
+// ----------------------------------------
+
+// Expose static middleware for user uploaded images/scans
+app.use("/api/user-images", express.static(USER_RECORDS_DIR));
+
+// Helper to load registered users
+function loadUsers(): any[] {
+  try {
+    if (fs.existsSync(USERS_FILE)) {
+      const data = fs.readFileSync(USERS_FILE, "utf-8");
+      return JSON.parse(data || "[]");
+    }
+  } catch (err) {
+    console.error("Failed to read users file:", err);
+  }
+  return [];
+}
+
+// Helper to save registered users
+function saveUsers(users: any[]) {
+  try {
+    fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2));
+  } catch (err) {
+    console.error("Failed to write users file:", err);
+  }
+}
+
+// Signup route
+app.post("/api/auth/signup", (req, res) => {
+  try {
+    const { username, password } = req.body;
+    if (!username || !password) {
+      return res.status(400).json({ error: "Username and password are required." });
+    }
+
+    const cleanUsername = username.trim().toLowerCase();
+    if (!/^[a-zA-Z0-9_.@+-]+$/.test(cleanUsername) || cleanUsername === "." || cleanUsername === ".." || cleanUsername.includes("..")) {
+      return res.status(400).json({ error: "Username or email can only contain alphanumeric characters, underscores, dashes, dots, plus signs, and at signs, and cannot contain consecutive dots." });
+    }
+
+    const users = loadUsers();
+    if (users.some((u: any) => u.username === cleanUsername)) {
+      return res.status(400).json({ error: "Username already exists." });
+    }
+
+    users.push({ username: cleanUsername, password });
+    saveUsers(users);
+
+    // Create user directories
+    const userFolder = path.join(USER_RECORDS_DIR, cleanUsername);
+    const userImagesFolder = path.join(userFolder, "images");
+    const userCatalogsFolder = path.join(userFolder, "catalogs");
+    if (!fs.existsSync(userFolder)) fs.mkdirSync(userFolder, { recursive: true });
+    if (!fs.existsSync(userImagesFolder)) fs.mkdirSync(userImagesFolder, { recursive: true });
+    if (!fs.existsSync(userCatalogsFolder)) fs.mkdirSync(userCatalogsFolder, { recursive: true });
+
+    // Initialize list file
+    const catalogsListFile = path.join(userFolder, "catalogs_list.json");
+    if (!fs.existsSync(catalogsListFile)) {
+      const initialMetadata = {
+        catalogs: [
+          {
+            id: "default",
+            name: "Default Catalogue",
+            timestamp: new Date().toISOString()
+          }
+        ],
+        activeCatalogId: "default"
+      };
+      fs.writeFileSync(catalogsListFile, JSON.stringify(initialMetadata, null, 2));
+    }
+
+
+
+
+
+    return res.json({ success: true, username: cleanUsername });
+  } catch (err: any) {
+    console.error("Signup failed:", err);
+    return res.status(500).json({ error: err.message || "Internal server error during registration." });
+  }
+});
+
+// Login route
+app.post("/api/auth/login", (req, res) => {
+  try {
+    const { username, password } = req.body;
+    if (!username || !password) {
+      return res.status(400).json({ error: "Username and password are required." });
+    }
+
+    const cleanUsername = username.trim().toLowerCase();
+    const users = loadUsers();
+    const user = users.find((u: any) => u.username === cleanUsername && u.password === password);
+
+    if (!user) {
+      return res.status(401).json({ error: "Invalid username or password." });
+    }
+
+    return res.json({ success: true, username: cleanUsername });
+  } catch (err: any) {
+    console.error("Login failed:", err);
+    return res.status(500).json({ error: err.message || "Internal server error during authentication." });
+  }
+});
+
+// Change password route
+app.post("/api/auth/change-password", (req, res) => {
+  try {
+    const username = req.headers["x-user-header"];
+    const { currentPassword, newPassword } = req.body;
+
+    if (!username || typeof username !== "string") {
+      return res.status(401).json({ error: "Unauthorized. Missing user header." });
+    }
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ error: "Current password and new password are required." });
+    }
+
+    const cleanUsername = username.trim().toLowerCase();
+    const users = loadUsers();
+    const userIndex = users.findIndex((u: any) => u.username === cleanUsername);
+
+    if (userIndex === -1 || users[userIndex].password !== currentPassword) {
+      return res.status(400).json({ error: "Incorrect current password." });
+    }
+
+    users[userIndex].password = newPassword;
+    saveUsers(users);
+
+    return res.json({ success: true });
+  } catch (err: any) {
+    console.error("Change password failed:", err);
+    return res.status(500).json({ error: err.message || "Failed to change password." });
+  }
+});
+
+// Delete user data / account route
+app.post("/api/user/delete-data", (req, res) => {
+  try {
+    const username = req.headers["x-user-header"];
+    const { deleteType } = req.body;
+
+    if (!username || typeof username !== "string") {
+      return res.status(401).json({ error: "Unauthorized. Missing user header." });
+    }
+    if (deleteType !== "data-only" && deleteType !== "account") {
+      return res.status(400).json({ error: "Invalid deletion type. Must be 'data-only' or 'account'." });
+    }
+
+    const cleanUsername = username.trim().toLowerCase();
+    const userFolder = path.join(USER_RECORDS_DIR, cleanUsername);
+
+    if (deleteType === "data-only") {
+      const catalogsFolder = path.join(userFolder, "catalogs");
+      const imagesFolder = path.join(userFolder, "images");
+
+      // Wipe catalog contents
+      if (fs.existsSync(catalogsFolder)) {
+        fs.rmSync(catalogsFolder, { recursive: true, force: true });
+      }
+      // Wipe uploaded images
+      if (fs.existsSync(imagesFolder)) {
+        fs.rmSync(imagesFolder, { recursive: true, force: true });
+      }
+
+
+      // Re-create blank directories
+      fs.mkdirSync(catalogsFolder, { recursive: true });
+      fs.mkdirSync(imagesFolder, { recursive: true });
+
+      // Re-initialize catalogs_list.json metadata
+      const catalogsListFile = path.join(userFolder, "catalogs_list.json");
+      const initialMetadata = {
+        catalogs: [
+          {
+            id: "default",
+            name: "Default Catalogue",
+            timestamp: new Date().toISOString()
+          }
+        ],
+        activeCatalogId: "default"
+      };
+      fs.writeFileSync(catalogsListFile, JSON.stringify(initialMetadata, null, 2));
+
+
+
+
+
+      return res.json({ success: true, message: "All appraisal data cleared successfully." });
+    } else {
+      // Complete Account deletion
+      if (fs.existsSync(userFolder)) {
+        fs.rmSync(userFolder, { recursive: true, force: true });
+      }
+
+      const users = loadUsers();
+      const updatedUsers = users.filter((u: any) => u.username !== cleanUsername);
+      saveUsers(updatedUsers);
+
+      return res.json({ success: true, message: "User account and data deleted successfully." });
+    }
+  } catch (err: any) {
+    console.error("Delete data failed:", err);
+    return res.status(500).json({ error: err.message || "Failed to delete data." });
+  }
+});
+
+// GET catalogs metadata list route
+app.get("/api/user/catalog-list", (req, res) => {
+  try {
+    const username = req.headers["x-user-header"];
+    if (!username || typeof username !== "string") {
+      return res.status(401).json({ error: "Unauthorized. Missing user header." });
+    }
+
+    const cleanUsername = username.trim().toLowerCase();
+    const userFolder = path.join(USER_RECORDS_DIR, cleanUsername);
+    const catalogsFolder = path.join(userFolder, "catalogs");
+    const catalogsListFile = path.join(userFolder, "catalogs_list.json");
+
+    if (!fs.existsSync(userFolder)) {
+      fs.mkdirSync(userFolder, { recursive: true });
+    }
+    if (!fs.existsSync(catalogsFolder)) {
+      fs.mkdirSync(catalogsFolder, { recursive: true });
+    }
+
+    let metadata: any = { catalogs: [], activeCatalogId: "default" };
+    let changed = false;
+
+    if (fs.existsSync(catalogsListFile)) {
+      try {
+        const rawData = fs.readFileSync(catalogsListFile, "utf-8");
+        metadata = JSON.parse(rawData || "{}");
+      } catch (e) {
+        console.error("Failed to parse catalogs_list.json, resetting:", e);
+      }
+    } else {
+      metadata.catalogs = [
+        {
+          id: "default",
+          name: "Default Catalogue",
+          timestamp: new Date().toISOString()
+        }
+      ];
+      changed = true;
+    }
+
+    if (!Array.isArray(metadata.catalogs)) {
+      metadata.catalogs = [];
+      changed = true;
+    }
+
+    // Scan catalogs/ folder to find all *.json catalog files and auto-register them
+    const files = fs.readdirSync(catalogsFolder);
+    for (const file of files) {
+      if (file.endsWith(".json")) {
+        const catalogId = path.basename(file, ".json");
+        const exists = metadata.catalogs.some((c: any) => c.id === catalogId);
+        if (!exists) {
+          const filePath = path.join(catalogsFolder, file);
+          const stats = fs.statSync(filePath);
+          metadata.catalogs.push({
+            id: catalogId,
+            name: `Catalogue ${catalogId}`,
+            timestamp: stats.mtime.toISOString()
+          });
+          changed = true;
+        }
+      }
+    }
+
+    // Write back updated list
+    if (changed) {
+      fs.writeFileSync(catalogsListFile, JSON.stringify(metadata, null, 2));
+    }
+
+    return res.json(metadata);
+  } catch (err: any) {
+    console.error("Failed to load catalog list:", err);
+    return res.status(500).json({ error: err.message || "Failed to load catalog list." });
+  }
+});
+
+// POST catalogs metadata list route
+app.post("/api/user/catalog-list", (req, res) => {
+  try {
+    const username = req.headers["x-user-header"];
+    const { catalogs, activeCatalogId } = req.body;
+
+    if (!username || typeof username !== "string") {
+      return res.status(401).json({ error: "Unauthorized. Missing user header." });
+    }
+
+    if (!catalogs || !Array.isArray(catalogs)) {
+      return res.status(400).json({ error: "Invalid catalogs list." });
+    }
+
+    const cleanUsername = username.trim().toLowerCase();
+    const userFolder = path.join(USER_RECORDS_DIR, cleanUsername);
+    if (!fs.existsSync(userFolder)) {
+      fs.mkdirSync(userFolder, { recursive: true });
+    }
+
+    const catalogsListFile = path.join(userFolder, "catalogs_list.json");
+    fs.writeFileSync(catalogsListFile, JSON.stringify({ catalogs, activeCatalogId }, null, 2));
+
+    return res.json({ success: true });
+  } catch (err: any) {
+    console.error("Failed to save catalog list:", err);
+    return res.status(500).json({ error: err.message || "Failed to save catalog list." });
+  }
+});
+
+// GET catalog items route (by id parameter)
+app.get("/api/user/catalog", (req, res) => {
+  try {
+    const username = req.headers["x-user-header"];
+    const { id } = req.query;
+
+    if (!username || typeof username !== "string") {
+      return res.status(401).json({ error: "Unauthorized. Missing user header." });
+    }
+
+    const cleanUsername = username.trim().toLowerCase();
+    
+    if (!id || typeof id !== "string") {
+      return res.status(400).json({ error: "Missing catalogue ID parameter." });
+    }
+
+    const catalogFile = path.join(USER_RECORDS_DIR, cleanUsername, "catalogs", `${id}.json`);
+
+    if (!fs.existsSync(catalogFile)) {
+      return res.json([]);
+    }
+
+    const data = fs.readFileSync(catalogFile, "utf-8");
+    const catalog = JSON.parse(data || "[]");
+    return res.json(catalog);
+  } catch (err: any) {
+    console.error("Failed to load user catalog:", err);
+    return res.status(500).json({ error: err.message || "Failed to load catalog." });
+  }
+});
+
+// POST catalog items route (by id parameter)
+app.post("/api/user/catalog", (req, res) => {
+  try {
+    const username = req.headers["x-user-header"];
+    const { catalog } = req.body;
+    const { id } = req.query;
+
+    if (!username || typeof username !== "string") {
+      return res.status(401).json({ error: "Unauthorized. Missing user header." });
+    }
+
+    if (!catalog || !Array.isArray(catalog)) {
+      return res.status(400).json({ error: "Catalog must be a valid array." });
+    }
+
+    const cleanUsername = username.trim().toLowerCase();
+    const userFolder = path.join(USER_RECORDS_DIR, cleanUsername);
+    
+    if (!id || typeof id !== "string") {
+      return res.status(400).json({ error: "Missing catalogue ID parameter." });
+    }
+
+    const catalogsFolder = path.join(userFolder, "catalogs");
+    if (!fs.existsSync(catalogsFolder)) {
+      fs.mkdirSync(catalogsFolder, { recursive: true });
+    }
+    const catalogFile = path.join(catalogsFolder, `${id}.json`);
+
+    fs.writeFileSync(catalogFile, JSON.stringify(catalog, null, 2));
+    return res.json({ success: true });
+  } catch (err: any) {
+    console.error("Failed to save user catalog:", err);
+    return res.status(500).json({ error: err.message || "Failed to save catalog." });
+  }
+});
+
+// POST delete specific catalog route
+app.post("/api/user/delete-catalog", (req, res) => {
+  try {
+    const username = req.headers["x-user-header"];
+    const { id } = req.body;
+
+    if (!username || typeof username !== "string") {
+      return res.status(401).json({ error: "Unauthorized. Missing user header." });
+    }
+
+    if (!id || typeof id !== "string") {
+      return res.status(400).json({ error: "Missing or invalid catalog id." });
+    }
+
+    const cleanUsername = username.trim().toLowerCase();
+    const userFolder = path.join(USER_RECORDS_DIR, cleanUsername);
+    const catalogFile = path.join(userFolder, "catalogs", `${id}.json`);
+
+    if (fs.existsSync(catalogFile)) {
+      fs.unlinkSync(catalogFile);
+    }
+
+    // Update catalogs_list.json
+    const catalogsListFile = path.join(userFolder, "catalogs_list.json");
+    if (fs.existsSync(catalogsListFile)) {
+      try {
+        const rawData = fs.readFileSync(catalogsListFile, "utf-8");
+        const metadata = JSON.parse(rawData || "{}");
+        if (Array.isArray(metadata.catalogs)) {
+          metadata.catalogs = metadata.catalogs.filter((c: any) => c.id !== id);
+        }
+
+        // If the active catalogue was deleted, select another one or reset to "default"
+        if (metadata.activeCatalogId === id) {
+          if (metadata.catalogs && metadata.catalogs.length > 0) {
+            metadata.activeCatalogId = metadata.catalogs[0].id;
+          } else {
+            // Reinitialize default
+            metadata.catalogs = [
+              {
+                id: "default",
+                name: "Default Catalogue",
+                timestamp: new Date().toISOString()
+              }
+            ];
+            metadata.activeCatalogId = "default";
+          }
+        }
+        fs.writeFileSync(catalogsListFile, JSON.stringify(metadata, null, 2));
+      } catch (e) {
+        console.error("Failed to update catalogs_list.json during deletion:", e);
+      }
+    }
+
+    return res.json({ success: true });
+  } catch (err: any) {
+    console.error("Failed to delete catalog file:", err);
+    return res.status(500).json({ error: err.message || "Failed to delete catalog." });
+  }
+});
+
+// POST upload scan image route
+app.post("/api/user/upload-scan", (req, res) => {
+  try {
+    const username = req.headers["x-user-header"];
+    const { imageBase64 } = req.body;
+
+    if (!username || typeof username !== "string") {
+      return res.status(401).json({ error: "Unauthorized. Missing user header." });
+    }
+
+    if (!imageBase64) {
+      return res.status(400).json({ error: "Missing imageBase64 data." });
+    }
+
+    const cleanUsername = username.trim().toLowerCase();
+    const userImagesFolder = path.join(USER_RECORDS_DIR, cleanUsername, "images");
+    if (!fs.existsSync(userImagesFolder)) {
+      fs.mkdirSync(userImagesFolder, { recursive: true });
+    }
+
+    // Decode base64
+    const matches = imageBase64.match(/^data:image\/(\w+);base64,(.+)$/);
+    let ext = "jpg";
+    let base64DataStr = imageBase64;
+    
+    if (matches && matches.length === 3) {
+      ext = matches[1];
+      if (ext === "jpeg") ext = "jpg";
+      base64DataStr = matches[2];
+    } else {
+      base64DataStr = imageBase64.replace(/^data:image\/\w+;base64,/, "");
+    }
+
+    const buffer = Buffer.from(base64DataStr, "base64");
+    const fileUuid = crypto.randomUUID();
+    const filename = `${fileUuid}.${ext}`;
+    const filePath = path.join(userImagesFolder, filename);
+
+    fs.writeFileSync(filePath, buffer);
+
+    const imageUrl = `/api/user-images/${cleanUsername}/images/${filename}`;
+    return res.json({ success: true, imageUrl });
+  } catch (err: any) {
+    console.error("Failed to save user scan image:", err);
+    return res.status(500).json({ error: err.message || "Failed to upload scan image." });
+  }
+});
+
+// ----------------------------------------
+// WEB SERVER STATIC / MIDDLEWARE SETUPS
 // WEB SERVER STATIC / MIDDLEWARE SETUPS
 // ----------------------------------------
 

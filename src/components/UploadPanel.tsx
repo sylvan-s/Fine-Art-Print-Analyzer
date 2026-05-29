@@ -25,6 +25,15 @@ interface UploadPanelProps {
   setScaleFile: (file: File | null) => void;
   setScalePreview: (url: string | null) => void;
   scaleInputRef: React.RefObject<HTMLInputElement | null>;
+
+  // Multi-catalogue props
+  catalogs: { id: string; name: string }[];
+  activeCatalogId: string;
+  targetOption: "current" | "new";
+  setTargetOption: (val: "current" | "new") => void;
+  newCatalogName: string;
+  setNewCatalogName: (val: string) => void;
+  onSwitchCatalog: (id: string) => Promise<void>;
 }
 
 const formatBytes = (bytes: number) => {
@@ -56,6 +65,13 @@ export default function UploadPanel({
   setScaleFile,
   setScalePreview,
   scaleInputRef,
+  catalogs,
+  activeCatalogId,
+  targetOption,
+  setTargetOption,
+  newCatalogName,
+  setNewCatalogName,
+  onSwitchCatalog,
 }: UploadPanelProps) {
   const triggerFileInput = () => {
     fileInputRef.current?.click();
@@ -301,6 +317,76 @@ export default function UploadPanel({
               </button>
             )}
           </div>
+        </div>
+      </div>
+
+      {/* Destination Catalogue selector */}
+      <div className="bg-stone-50 border border-rosebery-border p-4 md:p-5 rounded-sm space-y-4">
+        <div className="border-b border-rosebery-border pb-2">
+          <span className="text-[10px] font-mono uppercase tracking-[0.2em] text-rosebery-primary block font-bold">
+            DESTINATION CATALOGUE
+          </span>
+        </div>
+
+        <div className="space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center gap-6">
+            <label className="flex items-center gap-2 text-xs text-rosebery-charcoal cursor-pointer">
+              <input
+                type="radio"
+                name="targetOption"
+                value="current"
+                checked={targetOption === "current"}
+                onChange={() => setTargetOption("current")}
+                className="accent-rosebery-primary"
+              />
+              <span className="flex items-center gap-1.5">
+                Add to catalogue:
+                <select
+                  value={activeCatalogId}
+                  onChange={(e) => {
+                    setTargetOption("current");
+                    onSwitchCatalog(e.target.value);
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                  className="bg-white border border-rosebery-border rounded-xs px-2 py-1 text-xs text-rosebery-charcoal outline-none focus:border-rosebery-primary font-serif cursor-pointer ml-1"
+                >
+                  {catalogs.map((cat) => (
+                    <option key={cat.id} value={cat.id}>
+                      {cat.name} ({cat.id})
+                    </option>
+                  ))}
+                </select>
+              </span>
+            </label>
+
+            <label className="flex items-center gap-2 text-xs text-rosebery-charcoal cursor-pointer">
+              <input
+                type="radio"
+                name="targetOption"
+                value="new"
+                checked={targetOption === "new"}
+                onChange={() => setTargetOption("new")}
+                className="accent-rosebery-primary"
+              />
+              <span>Create new catalogue</span>
+            </label>
+          </div>
+
+          {targetOption === "new" && (
+            <div className="space-y-1.5 pt-1 animate-fadeIn">
+              <label className="text-[9px] font-mono text-rosebery-primary font-bold uppercase tracking-wider block">
+                Catalogue Name
+              </label>
+              <input
+                type="text"
+                required
+                placeholder="E.g. Picasso Prints, Lithos 2026..."
+                value={newCatalogName}
+                onChange={(e) => setNewCatalogName(e.target.value)}
+                className="w-full bg-white border border-rosebery-border focus:border-rosebery-primary rounded-sm px-3 py-2 text-xs text-rosebery-charcoal outline-hidden placeholder:text-stone-400"
+              />
+            </div>
+          )}
         </div>
       </div>
     </div>

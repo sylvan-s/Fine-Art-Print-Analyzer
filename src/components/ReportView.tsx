@@ -53,6 +53,76 @@ interface ReportViewProps {
   onUpdateReport?: (updated: PrintAnalysisReport) => void;
 }
 
+interface EvidenceCropProps {
+  imageUrl: string;
+  box_2d: number[];
+  label: string;
+}
+
+function EvidenceCrop({ imageUrl, box_2d, label }: EvidenceCropProps) {
+  const canvasRef = React.useRef<HTMLCanvasElement | null>(null);
+  const [error, setError] = React.useState(false);
+  const [isLoaded, setIsLoaded] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!imageUrl || !box_2d || box_2d.length !== 4) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => {
+      const [ymin, xmin, ymax, xmax] = box_2d;
+      
+      // Calculate coordinates in pixels
+      const x = (xmin / 1000) * img.width;
+      const y = (ymin / 1000) * img.height;
+      const w = ((xmax - xmin) / 1000) * img.width;
+      const h = ((ymax - ymin) / 1000) * img.height;
+
+      // Ensure cropped dimensions are valid and positive
+      const cropW = Math.max(1, w);
+      const cropH = Math.max(1, h);
+      
+      canvas.width = cropW;
+      canvas.height = cropH;
+
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = "high";
+      ctx.drawImage(img, x, y, cropW, cropH, 0, 0, cropW, cropH);
+      setIsLoaded(true);
+    };
+    img.onerror = () => {
+      setError(true);
+    };
+    img.src = imageUrl;
+  }, [imageUrl, box_2d]);
+
+  if (error) {
+    return (
+      <div className="w-full h-full min-h-[140px] flex items-center justify-center bg-stone-50 border border-stone-200 rounded text-[10px] font-mono text-rosebery-muted">
+        Failed to load scan evidence
+      </div>
+    );
+  }
+
+  return (
+    <div className="relative w-full aspect-square bg-[#FAF9F6] border border-rosebery-border rounded-sm overflow-hidden flex items-center justify-center shadow-gallery-soft group">
+      {!isLoaded && (
+        <div className="absolute inset-0 flex items-center justify-center bg-stone-50 text-[10px] font-mono text-rosebery-muted animate-pulse">
+          Loading evidence...
+        </div>
+      )}
+      <canvas 
+        ref={canvasRef} 
+        className={`max-w-full max-h-full object-contain transition-opacity duration-300 ${isLoaded ? "opacity-100" : "opacity-0"}`} 
+      />
+    </div>
+  );
+}
+
 export default function ReportView({ 
   report, 
   fileName, 
@@ -930,6 +1000,60 @@ export default function ReportView({
         </div>
       </div>
 
+      {/* Zoomed Visual Evidence Scans */}
+      {report.visualEvidenceHighlights && report.visualEvidenceHighlights.length > 0 && imageUrl && (
+        <div className="bg-white border border-rosebery-border rounded-xl p-6 md:p-8 shadow-gallery-soft space-y-6 animate-fadeIn">
+          <div className="border-b border-rosebery-border pb-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+            <div>
+              <span className="text-[10px] font-mono uppercase tracking-[0.2em] text-rosebery-primary block mb-1 font-bold">
+                PRIMARY SCAN EVIDENCE LOG
+              </span>
+              <h3 className="text-xl md:text-2xl font-serif text-rosebery-charcoal font-semibold">
+                Zoomed Evidence Scans (From Original Scan)
+              </h3>
+            </div>
+            <span className="text-[9px] font-mono text-rosebery-muted uppercase tracking-wider">
+              Automatic Microscopic Detections
+            </span>
+          </div>
+
+          <p className="text-xs text-rosebery-muted leading-relaxed">
+            The following details were automatically detected and cropped from the primary high-resolution photograph to corroborate the textual observations and appraisal statements.
+          </p>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
+            {signaturePreview && (
+              <div className="bg-stone-50 border border-rosebery-border p-4 rounded-lg flex flex-col justify-between space-y-3 shadow-xs hover:shadow-gallery-soft transition-all duration-200">
+                <div className="relative w-full aspect-square bg-[#FAF9F6] border border-rosebery-border rounded-sm overflow-hidden flex items-center justify-center shadow-gallery-soft">
+                  <img src={signaturePreview} alt="Signature closeup" className="max-w-full max-h-full object-contain" />
+                </div>
+                <div className="space-y-1">
+                  <span className="text-[11px] font-mono text-rosebery-primary font-bold uppercase tracking-wider block">
+                    ✒️ Signature Closeup
+                  </span>
+                  <p className="text-xs text-rosebery-muted leading-relaxed font-sans">
+                    {report.conditionNotes.signatureStatus || "Uploaded high-resolution signature detail view."}
+                  </p>
+                </div>
+              </div>
+            )}
+            {report.visualEvidenceHighlights.map((highlight, idx) => (
+              <div key={idx} className="bg-stone-50 border border-rosebery-border p-4 rounded-lg flex flex-col justify-between space-y-3 shadow-xs hover:shadow-gallery-soft transition-all duration-200">
+                <EvidenceCrop imageUrl={imageUrl} box_2d={highlight.box_2d} label={highlight.label} />
+                <div className="space-y-1">
+                  <span className="text-[11px] font-mono text-rosebery-primary font-bold uppercase tracking-wider block">
+                    🔍 {highlight.label}
+                  </span>
+                  <p className="text-xs text-rosebery-muted leading-relaxed font-sans">
+                    {highlight.observation}
+                  </p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Supplementary Microscopic / Closeup Analytics block */}
       {(isEditing || report.signatureAnalysis || report.damageAnalysis || report.inferredDimensions) && (
         <div className="bg-white border border-rosebery-border rounded-xl p-6 md:p-8 shadow-gallery-soft space-y-6">
@@ -1359,6 +1483,34 @@ export default function ReportView({
                 {report.conditionNotes.analysisDetails || "No conservation anomalies logged."}
               </p>
             </div>
+
+            {report.visualEvidenceHighlights && report.visualEvidenceHighlights.length > 0 && imageUrl && (
+              <div className="pt-2 border-t border-rosebery-border">
+                <span className="text-[10px] font-mono text-rosebery-primary uppercase tracking-wider font-semibold block mb-2.5">Zoomed Visual Evidence Scans</span>
+                <div className="grid grid-cols-4 gap-4">
+                  {signaturePreview && (
+                    <div className="border border-rosebery-border p-2 bg-stone-50 rounded-sm flex flex-col space-y-2">
+                      <div className="relative w-full aspect-square bg-[#FAF9F6] border border-rosebery-border rounded-sm overflow-hidden flex items-center justify-center shadow-gallery-soft">
+                        <img src={signaturePreview} alt="Signature zoom" className="max-w-full max-h-full object-contain" />
+                      </div>
+                      <div className="text-[9px] leading-tight">
+                        <span className="font-bold text-rosebery-charcoal block">✒️ Signature Closeup</span>
+                        <span className="text-rosebery-muted block mt-0.5">Uploaded auxiliary signature closeup.</span>
+                      </div>
+                    </div>
+                  )}
+                  {report.visualEvidenceHighlights.map((highlight, idx) => (
+                    <div key={idx} className="border border-rosebery-border p-2 bg-stone-50 rounded-sm flex flex-col space-y-2">
+                      <EvidenceCrop imageUrl={imageUrl} box_2d={highlight.box_2d} label={highlight.label} />
+                      <div className="text-[9px] leading-tight">
+                        <span className="font-bold text-rosebery-charcoal block">🔍 {highlight.label}</span>
+                        <span className="text-rosebery-muted block mt-0.5">{highlight.observation}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         </div>
 

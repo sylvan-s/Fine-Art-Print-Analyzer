@@ -1,6 +1,6 @@
 import React from "react";
 import { Download, Mail, Trash2, Folder, Hash, FileText, Check, Loader2, GripVertical, FileSpreadsheet } from "lucide-react";
-import { AnalysisHistoryItem, PrintAnalysisReport } from "../types";
+import { AnalysisHistoryItem, PrintAnalysisReport, CatalogMetadata } from "../types";
 import HistorySidebar from "./HistorySidebar";
 import LotCreatorModal from "./LotCreatorModal";
 
@@ -39,6 +39,12 @@ interface CatalogListViewProps {
   handleHistoryDrop: (e: React.DragEvent, targetIndex: number) => void;
   isGroupedByLot: boolean;
   onLoadHistoryItem: (item: AnalysisHistoryItem) => void;
+  catalogs: CatalogMetadata[];
+  activeCatalogId: string;
+  onSwitchCatalog: (id: string) => Promise<void>;
+  onRenameCatalog: (oldId: string, newId: string, name: string) => Promise<void>;
+  onDeleteCatalog: (id: string) => Promise<void>;
+  createNewCatalog: (name: string) => Promise<string>;
 }
 
 const getCurrencySymbol = (code: string) => {
@@ -100,9 +106,77 @@ export default function CatalogListView({
   handleHistoryDrop,
   isGroupedByLot,
   onLoadHistoryItem,
+  catalogs,
+  activeCatalogId,
+  onSwitchCatalog,
+  onRenameCatalog,
+  onDeleteCatalog,
+  createNewCatalog,
 }: CatalogListViewProps) {
+  const currentCatalog = catalogs.find((c) => c.id === activeCatalogId);
+
+  const [editName, setEditName] = React.useState(currentCatalog?.name || "");
+  const [editId, setEditId] = React.useState(currentCatalog?.id || "");
+  const [isSavingRename, setIsSavingRename] = React.useState(false);
+  const [renameError, setRenameError] = React.useState<string | null>(null);
+
+  const [newCatalogNameInput, setNewCatalogNameInput] = React.useState("");
+  const [isCreatingCatalog, setIsCreatingCatalog] = React.useState(false);
+  const [isDeletingCatalog, setIsDeletingCatalog] = React.useState(false);
+
+  const handleCreateEmptyCatalog = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newCatalogNameInput.trim()) return;
+    setIsCreatingCatalog(true);
+    try {
+      await createNewCatalog(newCatalogNameInput.trim());
+      setNewCatalogNameInput("");
+    } catch (err: any) {
+      console.error("Failed to create empty catalogue:", err);
+      alert(err.message || "Failed to create empty catalogue.");
+    } finally {
+      setIsCreatingCatalog(false);
+    }
+  };
+
+  const handleDeleteCurrentCatalog = async () => {
+    const isConfirmed = window.confirm(
+      `Are you sure you want to delete the catalogue "${currentCatalog?.name || activeCatalogId}" and all of its ${catalogHistory.length} appraisal records?\nThis operation is permanent and cannot be undone.`
+    );
+    if (!isConfirmed) return;
+
+    setIsDeletingCatalog(true);
+    try {
+      await onDeleteCatalog(activeCatalogId);
+    } catch (err: any) {
+      console.error("Failed to delete catalogue:", err);
+      alert(err.message || "Failed to delete catalogue.");
+    } finally {
+      setIsDeletingCatalog(false);
+    }
+  };
+
+  React.useEffect(() => {
+    setEditName(currentCatalog?.name || "");
+    setEditId(currentCatalog?.id || "");
+    setRenameError(null);
+  }, [activeCatalogId, currentCatalog]);
+
+  const handleRenameSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editName.trim()) return;
+    setIsSavingRename(true);
+    setRenameError(null);
+    try {
+      await onRenameCatalog(activeCatalogId, activeCatalogId, editName.trim());
+    } catch (err: any) {
+      setRenameError(err.message || "Failed to rename catalogue.");
+    } finally {
+      setIsSavingRename(false);
+    }
+  };
   const activeItem =
-    catalogHistory.find((item) => item.id === (selectedHistoryId || catalogHistory[0].id)) ||
+    catalogHistory.find((item) => item.id === (selectedHistoryId || catalogHistory[0]?.id)) ||
     catalogHistory[0];
 
   const totalEstimates = React.useMemo(() => {
@@ -211,10 +285,118 @@ export default function CatalogListView({
 
   return (
     <div className="space-y-6 animate-fadeIn">
+      {/* Catalogue Manager & Editor */}
+      <div className="bg-rosebery-card border border-rosebery-border rounded-sm p-5 md:p-6 shadow-gallery-soft space-y-4">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-rosebery-border pb-3">
+          <div>
+            <h3 className="text-base font-serif text-rosebery-charcoal font-semibold tracking-wide flex items-center gap-2">
+              <Folder className="w-5 h-5 text-rosebery-primary" />
+              Catalogue Manager
+            </h3>
+            <p className="text-xs text-rosebery-muted mt-0.5">
+              Switch active catalogues, rename titles, and configure identifiers.
+            </p>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <label className="text-xs font-serif text-rosebery-charcoal whitespace-nowrap">
+              Active Catalogue:
+            </label>
+            <select
+              value={activeCatalogId}
+              onChange={(e) => onSwitchCatalog(e.target.value)}
+              className="bg-white border border-rosebery-border rounded-sm px-3 py-1.5 text-xs text-rosebery-charcoal outline-none focus:border-rosebery-primary font-serif cursor-pointer"
+            >
+              {catalogs.map((cat) => (
+                <option key={cat.id} value={cat.id}>
+                  {cat.name} ({cat.id})
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-3 border-t border-rosebery-border/60">
+          {/* Left Column: Rename Catalogue */}
+          <form onSubmit={handleRenameSubmit} className="space-y-3">
+            <div className="space-y-1">
+              <label className="text-[9px] font-mono text-rosebery-primary font-bold uppercase tracking-wider block">
+                Rename Catalogue Name
+              </label>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  required
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  className="flex-1 bg-white border border-rosebery-border focus:border-rosebery-primary rounded-sm px-3 py-1.5 text-xs text-rosebery-charcoal outline-none"
+                />
+                <button
+                  type="submit"
+                  disabled={isSavingRename || editName.trim() === currentCatalog?.name}
+                  className="bg-rosebery-primary hover:bg-rosebery-primary-hover disabled:bg-stone-200 disabled:text-stone-400 text-white font-mono text-[10px] font-bold tracking-wider uppercase px-4 py-2 rounded-sm flex items-center justify-center gap-1.5 cursor-pointer transition-all duration-200"
+                >
+                  {isSavingRename ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+                  Rename
+                </button>
+              </div>
+            </div>
+            {renameError && (
+              <p className="text-[11px] font-mono text-red-600 mt-1">{renameError}</p>
+            )}
+          </form>
+
+          {/* Right Column: Create Empty Catalogue */}
+          <form onSubmit={handleCreateEmptyCatalog} className="space-y-3">
+            <div className="space-y-1">
+              <label className="text-[9px] font-mono text-rosebery-primary font-bold uppercase tracking-wider block">
+                Create New Empty Catalogue
+              </label>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  required
+                  placeholder="Enter name (e.g., Lithographs 2026)"
+                  value={newCatalogNameInput}
+                  onChange={(e) => setNewCatalogNameInput(e.target.value)}
+                  className="flex-1 bg-white border border-rosebery-border focus:border-rosebery-primary rounded-sm px-3 py-1.5 text-xs text-rosebery-charcoal outline-none"
+                />
+                <button
+                  type="submit"
+                  disabled={isCreatingCatalog || !newCatalogNameInput.trim()}
+                  className="bg-[#C0AA84] hover:bg-[#D7C3A2] disabled:bg-stone-200 disabled:text-stone-400 text-rosebery-charcoal font-mono text-[10px] font-bold tracking-wider uppercase px-4 py-2 rounded-sm flex items-center justify-center gap-1.5 cursor-pointer transition-all duration-200"
+                >
+                  {isCreatingCatalog ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Folder className="w-3.5 h-3.5" />}
+                  Create
+                </button>
+              </div>
+            </div>
+          </form>
+        </div>
+
+        {/* Danger Zone: Delete Catalogue */}
+        <div className="pt-4 border-t border-rosebery-border/60 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div>
+            <p className="text-xs font-semibold text-rosebery-charcoal font-serif">Danger Zone</p>
+            <p className="text-[10px] text-rosebery-muted">
+              Permanently delete this catalogue and all associated scanned items.
+            </p>
+          </div>
+          <button
+            onClick={handleDeleteCurrentCatalog}
+            disabled={isDeletingCatalog}
+            className="border border-red-200 hover:border-red-300 bg-red-50/50 hover:bg-red-50 text-red-800 disabled:bg-stone-200 disabled:text-stone-400 font-mono text-[10px] font-bold uppercase tracking-wider px-4 py-2.5 rounded-sm flex items-center justify-center gap-1.5 cursor-pointer transition-colors duration-200"
+          >
+            {isDeletingCatalog ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+            Delete Current Catalogue
+          </button>
+        </div>
+      </div>
+
       {/* Archive overview banner */}
       <div className="bg-rosebery-card border border-rosebery-border rounded-sm p-5 md:p-6 flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-gallery-soft">
         <div>
-          <h2 className="text-xl font-serif text-rosebery-charcoal tracking-wide font-semibold">Archived Appraisal Records</h2>
+          <h2 className="text-xl font-serif text-rosebery-charcoal tracking-wide font-semibold">Appraisals recorded in this session</h2>
           <p className="text-xs text-rosebery-muted mt-1">
             Browse, group into lots, sort records, and export registered appraisals.
           </p>

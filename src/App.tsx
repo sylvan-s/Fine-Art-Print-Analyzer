@@ -9,14 +9,29 @@ import {
   Info,
   X,
   Mail,
-  Check
+  Check,
+  Layers,
+  User,
+  Settings
 } from "lucide-react";
-import { PrintAnalysisReport, AnalysisHistoryItem } from "./types";
+import { PrintAnalysisReport, AnalysisHistoryItem, CatalogMetadata } from "./types";
 import ReportView from "./components/ReportView";
 import UploadPanel from "./components/UploadPanel";
 import AppraiserNotesInput from "./components/AppraiserNotesInput";
 import CatalogListView from "./components/CatalogListView";
-import { getHistoryDB, setHistoryDB } from "./utils/db";
+import BatchProcessor from "./components/BatchProcessor";
+import SettingsView from "./components/SettingsView";
+import { 
+  getHistoryDB, 
+  setHistoryDB, 
+  getCatalogsListDB, 
+  setCatalogsListDB, 
+  getActiveCatalogIdDB, 
+  setActiveCatalogIdDB, 
+  getCatalogItemsDB, 
+  setCatalogItemsDB, 
+  deleteCatalogItemsDB 
+} from "./utils/db";
 
 // Helper: Generate a small compressed JPEG thumbnail image (max 300x300) for history items to prevent LocalStorage QuotaExceededError
 const generateThumbnail = (fileOrBase64: File | string, maxWidth = 300, maxHeight = 300): Promise<string> => {
@@ -74,9 +89,21 @@ const generateThumbnail = (fileOrBase64: File | string, maxWidth = 300, maxHeigh
   });
 };
 
+const generateUniqueCatalogId = (existingCatalogs: { id: string }[]): string => {
+  let attempts = 0;
+  while (attempts < 100) {
+    const id = Math.floor(10000 + Math.random() * 90000).toString();
+    if (!existingCatalogs.some(c => c.id === id)) {
+      return id;
+    }
+    attempts++;
+  }
+  return Math.floor(10000 + Math.random() * 90000).toString(); // fallback
+};
+
 export default function App() {
   // Navigation / Workspace States
-  const [activeTab, setActiveTab] = useState<"sandbox" | "history">("sandbox");
+  const [activeTab, setActiveTab] = useState<"sandbox" | "batch" | "history" | "settings">("sandbox");
   const [dragActive, setDragActive] = useState(false);
   
   // Input states
@@ -119,6 +146,24 @@ export default function App() {
   const [emailSending, setEmailSending] = useState(false);
   const [emailMessage, setEmailMessage] = useState<string | null>(null);
   const [emailSuccess, setEmailSuccess] = useState(false);
+
+  // User Authentication States
+  const [currentUser, setCurrentUser] = useState<string | null>(() => {
+    return localStorage.getItem("print_analyzer_user");
+  });
+  const [showAuthModal, setShowAuthModal] = useState(false);
+  const [isSignUpMode, setIsSignUpMode] = useState(false);
+  const [authUsername, setAuthUsername] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authError, setAuthError] = useState("");
+  const [authSuccess, setAuthSuccess] = useState("");
+  const [authLoading, setAuthLoading] = useState(false);
+
+  // Multi-catalogue States
+  const [catalogs, setCatalogs] = useState<CatalogMetadata[]>([]);
+  const [activeCatalogId, setActiveCatalogId] = useState<string>("default");
+  const [targetOption, setTargetOption] = useState<"current" | "new">("current");
+  const [newCatalogName, setNewCatalogName] = useState("");
 
   // States for multi-item Lot creation and Gemini proposal
   const [selectedItemIds, setSelectedItemIds] = useState<string[]>([]);
@@ -168,15 +213,45 @@ export default function App() {
   const damageInputRef = useRef<HTMLInputElement>(null);
   const scaleInputRef = useRef<HTMLInputElement>(null);
 
-  // Load history from IndexedDB on mount
+  // Load history from IndexedDB (or server if logged in) on mount
   useEffect(() => {
     const loadHistory = async () => {
       setIsHistoryLoading(true);
       try {
-        const savedHistory = await getHistoryDB();
-        setCatalogHistory(savedHistory);
+        const username = localStorage.getItem("print_analyzer_user");
+        if (username) {
+          setCurrentUser(username);
+          
+          const listRes = await fetch("/api/user/catalog-list", {
+            headers: { "X-User-Header": username }
+          });
+          if (listRes.ok) {
+            const listData = await listRes.json();
+            setCatalogs(listData.catalogs || []);
+            setActiveCatalogId(listData.activeCatalogId || "default");
+            
+            const activeId = listData.activeCatalogId || "default";
+            const res = await fetch(`/api/user/catalog?id=${activeId}`, {
+              headers: { "X-User-Header": username }
+            });
+            if (res.ok) {
+              const data = await res.json();
+              setCatalogHistory(data);
+              await setCatalogItemsDB(activeId, data);
+            }
+            setIsHistoryLoading(false);
+            return;
+          }
+        }
+        
+        const localList = await getCatalogsListDB();
+        setCatalogs(localList);
+        const localActiveId = await getActiveCatalogIdDB();
+        setActiveCatalogId(localActiveId);
+        const localItems = await getCatalogItemsDB(localActiveId);
+        setCatalogHistory(localItems);
       } catch (err) {
-        console.error("Failed to load IndexedDB catalog history:", err);
+        console.error("Failed to load catalog history on mount:", err);
       } finally {
         setIsHistoryLoading(false);
       }
@@ -184,15 +259,464 @@ export default function App() {
     loadHistory();
   }, []);
 
-  // Save history helper (IndexedDB async)
-  const updateHistory = async (newHistory: AnalysisHistoryItem[]) => {
-    // Instantly update state for UI responsiveness
-    setCatalogHistory(newHistory);
+  const uploadImagePayload = async (base64Data: string, username: string): Promise<string> => {
     try {
-      await setHistoryDB(newHistory);
+      const res = await fetch("/api/user/upload-scan", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-User-Header": username
+        },
+        body: JSON.stringify({ imageBase64: base64Data })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        return data.imageUrl;
+      }
+    } catch (err) {
+      console.error("Failed to upload image payload to server:", err);
+    }
+    return base64Data;
+  };
+
+  const uploadNewScansToServer = async (history: AnalysisHistoryItem[], username: string): Promise<AnalysisHistoryItem[]> => {
+    const updatedHistory = [...history];
+    for (let i = 0; i < updatedHistory.length; i++) {
+      const item = { ...updatedHistory[i] };
+      
+      // 1. Main image
+      if (item.imageUrl && item.imageUrl.startsWith("data:image/")) {
+        item.imageUrl = await uploadImagePayload(item.imageUrl, username);
+      }
+      // 2. Signature image
+      if (item.signatureImageUrl && item.signatureImageUrl.startsWith("data:image/")) {
+        item.signatureImageUrl = await uploadImagePayload(item.signatureImageUrl, username);
+      }
+      // 3. Damage image
+      if (item.damageImageUrl && item.damageImageUrl.startsWith("data:image/")) {
+        item.damageImageUrl = await uploadImagePayload(item.damageImageUrl, username);
+      }
+      // 4. Scale image
+      if (item.scaleImageUrl && item.scaleImageUrl.startsWith("data:image/")) {
+        item.scaleImageUrl = await uploadImagePayload(item.scaleImageUrl, username);
+      }
+      
+      updatedHistory[i] = item;
+    }
+    return updatedHistory;
+  };
+
+  // Save history helper (IndexedDB async + Server sync if logged in)
+  const updateHistory = async (newHistory: AnalysisHistoryItem[]): Promise<AnalysisHistoryItem[]> => {
+    setCatalogHistory(newHistory);
+    
+    const updatedCatalogs = catalogs.map(c => 
+      c.id === activeCatalogId ? { ...c, timestamp: new Date().toISOString() } : c
+    );
+    setCatalogs(updatedCatalogs);
+    
+    try {
+      await setCatalogItemsDB(activeCatalogId, newHistory);
+      await setCatalogsListDB(updatedCatalogs);
     } catch (err: any) {
       console.error("Failed to persist print analysis library in IndexedDB:", err);
       setError("Failed to save changes to local database.");
+    }
+
+    let resultHistory = newHistory;
+    if (currentUser) {
+      try {
+        const syncedHistory = await uploadNewScansToServer(newHistory, currentUser);
+        resultHistory = syncedHistory;
+        
+        const res = await fetch(`/api/user/catalog?id=${activeCatalogId}`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-User-Header": currentUser
+          },
+          body: JSON.stringify({ catalog: syncedHistory })
+        });
+        
+        await fetch("/api/user/catalog-list", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-User-Header": currentUser
+          },
+          body: JSON.stringify({ catalogs: updatedCatalogs, activeCatalogId })
+        });
+
+        if (res.ok) {
+          setCatalogHistory(syncedHistory);
+          await setCatalogItemsDB(activeCatalogId, syncedHistory);
+        }
+      } catch (serverErr) {
+        console.error("Failed to sync catalog with server:", serverErr);
+      }
+    }
+    return resultHistory;
+  };
+
+  const handleSwitchCatalog = async (id: string) => {
+    setIsHistoryLoading(true);
+    setActiveCatalogId(id);
+    
+    try {
+      await setActiveCatalogIdDB(id);
+      
+      if (currentUser) {
+        await fetch("/api/user/catalog-list", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-User-Header": currentUser
+          },
+          body: JSON.stringify({ catalogs, activeCatalogId: id })
+        });
+      }
+    } catch (err) {
+      console.error("Failed to switch catalog ID in storage:", err);
+    }
+
+    try {
+      const res = await fetch(`/api/user/catalog?id=${id}`, {
+        headers: { "X-User-Header": currentUser || "" }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setCatalogHistory(data);
+        await setCatalogItemsDB(id, data);
+        setIsHistoryLoading(false);
+        return;
+      }
+    } catch (err) {
+      console.error("Failed to load catalog items from server, falling back to local DB:", err);
+    }
+
+    try {
+      const localItems = await getCatalogItemsDB(id);
+      setCatalogHistory(localItems);
+    } catch (err) {
+      console.error("Failed to load switched catalog items:", err);
+    } finally {
+      setIsHistoryLoading(false);
+    }
+  };
+
+  const createNewCatalog = async (name: string): Promise<string> => {
+    const finalId = generateUniqueCatalogId(catalogs);
+    const finalName = name.trim() || `Catalogue ${new Date().toLocaleDateString()}`;
+
+    const newCatalog: CatalogMetadata = {
+      id: finalId,
+      name: finalName,
+      timestamp: new Date().toISOString()
+    };
+
+    const updatedCatalogs = [...catalogs, newCatalog];
+    setCatalogs(updatedCatalogs);
+    setActiveCatalogId(finalId);
+    setCatalogHistory([]);
+
+    await setCatalogsListDB(updatedCatalogs);
+    await setActiveCatalogIdDB(finalId);
+    await setCatalogItemsDB(finalId, []);
+
+    if (currentUser) {
+      try {
+        await fetch("/api/user/catalog-list", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-User-Header": currentUser
+          },
+          body: JSON.stringify({ catalogs: updatedCatalogs, activeCatalogId: finalId })
+        });
+        await fetch(`/api/user/catalog?id=${finalId}`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-User-Header": currentUser
+          },
+          body: JSON.stringify({ catalog: [] })
+        });
+      } catch (err) {
+        console.error("Failed to sync new catalog to server:", err);
+      }
+    }
+
+    return finalId;
+  };
+
+  const handleRenameCatalog = async (oldId: string, newId: string, newName: string) => {
+    const cleanNewId = newId.trim().toLowerCase().replace(/[^a-z0-9_-]/g, "-");
+    const finalNewId = cleanNewId || oldId;
+    const finalNewName = newName.trim() || "Untitled Catalogue";
+
+    if (finalNewId !== oldId && catalogs.some(c => c.id === finalNewId)) {
+      throw new Error(`A catalogue with ID "${finalNewId}" already exists.`);
+    }
+
+    const updatedCatalogs = catalogs.map(c => 
+      c.id === oldId ? { ...c, id: finalNewId, name: finalNewName, timestamp: new Date().toISOString() } : c
+    );
+
+    try {
+      const items = await getCatalogItemsDB(oldId);
+      await setCatalogItemsDB(finalNewId, items);
+      if (finalNewId !== oldId) {
+        await deleteCatalogItemsDB(oldId);
+      }
+      await setCatalogsListDB(updatedCatalogs);
+      if (activeCatalogId === oldId) {
+        setActiveCatalogId(finalNewId);
+        await setActiveCatalogIdDB(finalNewId);
+      }
+      setCatalogs(updatedCatalogs);
+    } catch (err) {
+      console.error("Local catalog rename failed:", err);
+      throw new Error("Failed to rename catalogue in local database.");
+    }
+
+    if (currentUser) {
+      try {
+        const items = await getCatalogItemsDB(finalNewId);
+        const syncedHistory = await uploadNewScansToServer(items, currentUser);
+        
+        await fetch(`/api/user/catalog?id=${finalNewId}`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-User-Header": currentUser
+          },
+          body: JSON.stringify({ catalog: syncedHistory })
+        });
+
+        await fetch("/api/user/catalog-list", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-User-Header": currentUser
+          },
+          body: JSON.stringify({ catalogs: updatedCatalogs, activeCatalogId: activeCatalogId === oldId ? finalNewId : activeCatalogId })
+        });
+
+        if (finalNewId !== oldId) {
+          await fetch("/api/user/delete-catalog", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-User-Header": currentUser
+            },
+            body: JSON.stringify({ id: oldId })
+          });
+        }
+      } catch (err) {
+        console.error("Server catalog rename sync failed:", err);
+      }
+    }
+  };
+
+  const handleDeleteCatalog = async (id: string) => {
+    setIsHistoryLoading(true);
+    try {
+      if (currentUser) {
+        const res = await fetch("/api/user/delete-catalog", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-User-Header": currentUser
+          },
+          body: JSON.stringify({ id })
+        });
+        if (!res.ok) {
+          const data = await res.json();
+          throw new Error(data.error || "Failed to delete catalogue on server.");
+        }
+      }
+
+      await deleteCatalogItemsDB(id);
+
+      const updatedCatalogs = catalogs.filter((c) => c.id !== id);
+      
+      if (activeCatalogId === id) {
+        if (updatedCatalogs.length > 0) {
+          const fallbackId = updatedCatalogs[0].id;
+          setCatalogs(updatedCatalogs);
+          await setCatalogsListDB(updatedCatalogs);
+          await handleSwitchCatalog(fallbackId);
+        } else {
+          // Re-create default catalog
+          const defaultCatalog: CatalogMetadata = {
+            id: "default",
+            name: "Default Catalogue",
+            timestamp: new Date().toISOString()
+          };
+          const resetList = [defaultCatalog];
+          setCatalogs(resetList);
+          setActiveCatalogId("default");
+          setCatalogHistory([]);
+
+          await setCatalogsListDB(resetList);
+          await setActiveCatalogIdDB("default");
+          await setCatalogItemsDB("default", []);
+
+          if (currentUser) {
+            await fetch("/api/user/catalog-list", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "X-User-Header": currentUser
+              },
+              body: JSON.stringify({ catalogs: resetList, activeCatalogId: "default" })
+            });
+            await fetch("/api/user/catalog?id=default", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "X-User-Header": currentUser
+              },
+              body: JSON.stringify({ catalog: [] })
+            });
+          }
+        }
+      } else {
+        setCatalogs(updatedCatalogs);
+        await setCatalogsListDB(updatedCatalogs);
+        
+        if (currentUser) {
+          await fetch("/api/user/catalog-list", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-User-Header": currentUser
+            },
+            body: JSON.stringify({ catalogs: updatedCatalogs, activeCatalogId })
+          });
+        }
+      }
+    } catch (err: any) {
+      console.error("Failed to delete catalogue:", err);
+      alert(err.message || "Failed to delete catalogue.");
+    } finally {
+      setIsHistoryLoading(false);
+    }
+  };
+
+  const handleAuthSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError("");
+    setAuthSuccess("");
+    setAuthLoading(true);
+
+    const endpoint = isSignUpMode ? "/api/auth/signup" : "/api/auth/login";
+    try {
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: authUsername, password: authPassword })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Authentication failed.");
+      }
+
+      if (isSignUpMode) {
+        setAuthSuccess("Account created successfully! Logging you in...");
+        setIsSignUpMode(false);
+        
+        const loggedInUser = data.username;
+        localStorage.setItem("print_analyzer_user", loggedInUser);
+        setCurrentUser(loggedInUser);
+
+        try {
+          await fetch("/api/user/catalog-list", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-User-Header": loggedInUser
+            },
+            body: JSON.stringify({ catalogs, activeCatalogId })
+          });
+
+          for (const cat of catalogs) {
+            const localItems = await getCatalogItemsDB(cat.id);
+            const syncedHistory = await uploadNewScansToServer(localItems, loggedInUser);
+            
+            await setCatalogItemsDB(cat.id, syncedHistory);
+            if (cat.id === activeCatalogId) {
+              setCatalogHistory(syncedHistory);
+            }
+
+            await fetch(`/api/user/catalog?id=${cat.id}`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "X-User-Header": loggedInUser
+              },
+              body: JSON.stringify({ catalog: syncedHistory })
+            });
+          }
+        } catch (syncErr) {
+          console.error("Failed to sync local catalogues to server on registration:", syncErr);
+        }
+      } else {
+        const loggedInUser = data.username;
+        localStorage.setItem("print_analyzer_user", loggedInUser);
+        setCurrentUser(loggedInUser);
+
+        const listRes = await fetch("/api/user/catalog-list", {
+          headers: { "X-User-Header": loggedInUser }
+        });
+        if (listRes.ok) {
+          const listData = await listRes.json();
+          setCatalogs(listData.catalogs || []);
+          setActiveCatalogId(listData.activeCatalogId || "default");
+          
+          const activeId = listData.activeCatalogId || "default";
+          const catalogRes = await fetch(`/api/user/catalog?id=${activeId}`, {
+            headers: { "X-User-Header": loggedInUser }
+          });
+          if (catalogRes.ok) {
+            const catalogData = await catalogRes.json();
+            setCatalogHistory(catalogData);
+            await setCatalogItemsDB(activeId, catalogData);
+            await setCatalogsListDB(listData.catalogs);
+            await setActiveCatalogIdDB(activeId);
+          }
+        }
+      }
+
+      setTimeout(() => {
+        setShowAuthModal(false);
+        setAuthUsername("");
+        setAuthPassword("");
+        setAuthSuccess("");
+      }, 1000);
+
+    } catch (err: any) {
+      setAuthError(err.message || "Something went wrong.");
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    localStorage.removeItem("print_analyzer_user");
+    setCurrentUser(null);
+    setIsHistoryLoading(true);
+    try {
+      const localList = await getCatalogsListDB();
+      setCatalogs(localList);
+      const localActiveId = await getActiveCatalogIdDB();
+      setActiveCatalogId(localActiveId);
+      const localItems = await getCatalogItemsDB(localActiveId);
+      setCatalogHistory(localItems);
+    } catch (err) {
+      console.error("Failed to restore local catalogs on logout:", err);
+    } finally {
+      setIsHistoryLoading(false);
     }
   };
 
@@ -430,10 +954,74 @@ export default function App() {
         imageFileName: selectedFile.name || "Uploaded_Print.png",
         imageSize: formatBytes(selectedFile.size),
         report: result,
+        signatureImageUrl: signaturePreview || undefined,
+        damageImageUrl: damagePreview || undefined,
+        scaleImageUrl: scalePreview || undefined,
       };
 
+      let activeHistory = [...catalogHistory];
+      let currentId = activeCatalogId;
+      if (targetOption === "new") {
+        try {
+          currentId = await createNewCatalog(newCatalogName);
+          activeHistory = [];
+          setTargetOption("current");
+          setNewCatalogName("");
+        } catch (catErr: any) {
+          setError(catErr.message);
+          setIsLoading(false);
+          clearInterval(interval);
+          clearInterval(progressTextTimer);
+          return;
+        }
+      }
+
       setCurrentHistoryItemId(newHistoryItemId);
-      updateHistory([historyItem, ...catalogHistory]);
+      
+      const newHistory = [historyItem, ...activeHistory];
+      setCatalogHistory(newHistory);
+      
+      const updatedCatalogs = catalogs.map(c => 
+        c.id === currentId ? { ...c, timestamp: new Date().toISOString() } : c
+      );
+      setCatalogs(updatedCatalogs);
+      
+      try {
+        await setCatalogItemsDB(currentId, newHistory);
+        await setCatalogsListDB(updatedCatalogs);
+      } catch (err: any) {
+        console.error("Failed to save catalog items to IndexedDB:", err);
+      }
+
+      if (currentUser) {
+        try {
+          const syncedHistory = await uploadNewScansToServer(newHistory, currentUser);
+          const res = await fetch(`/api/user/catalog?id=${currentId}`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-User-Header": currentUser
+            },
+            body: JSON.stringify({ catalog: syncedHistory })
+          });
+          
+          await fetch("/api/user/catalog-list", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-User-Header": currentUser
+            },
+            body: JSON.stringify({ catalogs: updatedCatalogs, activeCatalogId: currentId })
+          });
+
+          if (res.ok) {
+            setCatalogHistory(syncedHistory);
+            await setCatalogItemsDB(currentId, syncedHistory);
+          }
+        } catch (serverErr) {
+          console.error("Failed to sync catalog with server:", serverErr);
+        }
+      }
 
       setTimeout(() => {
         setIsLoading(false);
@@ -832,9 +1420,8 @@ export default function App() {
       {/* Visual background framing texture */}
       <div className="absolute inset-0 pointer-events-none opacity-[0.03] bg-[radial-gradient(#4C0B2A_1.5px,transparent_1.5px)] [background-size:20px_20px]" />
 
-      {/* Top Gallery Header Banner */}
-      <header className="border-b border-[#3E0A22] bg-rosebery-primary relative z-10 shadow-lg">
-        <div className="max-w-6xl mx-auto px-6 py-5 md:py-6 flex flex-col sm:flex-row items-center justify-between gap-4">
+      <header className="border-b border-[#3E0A22] bg-rosebery-primary relative z-10 shadow-lg pb-4.5">
+        <div className="max-w-6xl mx-auto px-6 pt-5 md:pt-6 flex flex-col sm:flex-row items-center justify-between gap-4">
           <div className="text-center sm:text-left flex items-center gap-3.5">
             <div className="bg-[#C0AA84] text-rosebery-primary p-2.5 rounded-sm shadow-gallery-deep">
               <Compass className="w-6 h-6 stroke-[1.5]" />
@@ -849,11 +1436,53 @@ export default function App() {
             </div>
           </div>
 
-          {/* Navigation Controls */}
-          <div className="flex bg-[#3D0821] p-1 rounded-sm border border-[#5A1033]">
+          {/* Top Line: Settings & User Account Auth */}
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => setActiveTab("settings")}
+              className={`flex items-center gap-1.5 px-4.5 py-2.5 text-xs font-semibold uppercase tracking-wider transition-all duration-200 cursor-pointer rounded-sm border ${
+                activeTab === "settings"
+                  ? "bg-[#C0AA84] text-rosebery-charcoal border-[#C0AA84] shadow-gallery-deep"
+                  : "text-[#D2B4C2] border-[#5A1033] bg-[#3D0821] hover:text-white"
+              }`}
+            >
+              <Settings className="w-3.5 h-3.5" />
+              Settings
+            </button>
+
+            {currentUser ? (
+              <div className="flex items-center gap-1.5 bg-[#3D0821] p-1 rounded-sm border border-[#5A1033] text-white">
+                <span className="text-xs font-mono px-2.5 py-1 text-[#D7C3A2] font-semibold truncate max-w-[120px] flex items-center gap-1">
+                  <User className="w-3 h-3 text-[#C0AA84]" />
+                  {currentUser}
+                </span>
+                <button
+                  onClick={handleLogout}
+                  className="bg-rose-900 hover:bg-rose-950 text-white text-[10px] uppercase tracking-wider font-bold px-3 py-2 rounded-xs transition-all duration-200 cursor-pointer border border-rose-950/40"
+                >
+                  Logout
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={() => {
+                  setIsSignUpMode(false);
+                  setShowAuthModal(true);
+                }}
+                className="bg-[#C0AA84] hover:bg-[#D7C3A2] text-rosebery-primary text-[10px] uppercase tracking-wider font-bold px-4 py-3 rounded-sm transition-all duration-200 shadow-md cursor-pointer border-none"
+              >
+                Login / Register
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Second Line: Main Navigation Tabs */}
+        <div className="max-w-6xl mx-auto px-6 mt-4 flex justify-end animate-fadeIn">
+          <div className="flex bg-[#3D0821] p-1 rounded-sm border border-[#5A1033] w-full sm:w-auto">
             <button
               onClick={() => setActiveTab("sandbox")}
-              className={`flex items-center gap-1.5 px-4 py-2 text-xs font-semibold uppercase tracking-wider transition-all duration-200 ${
+              className={`flex-1 sm:flex-initial flex items-center justify-center gap-1.5 px-5 py-2.5 text-xs font-semibold uppercase tracking-wider transition-all duration-200 cursor-pointer ${
                 activeTab === "sandbox"
                   ? "bg-[#C0AA84] text-rosebery-charcoal rounded-sm shadow-gallery-deep"
                   : "text-[#D2B4C2] hover:text-white"
@@ -863,15 +1492,26 @@ export default function App() {
               New Appraisal
             </button>
             <button
+              onClick={() => setActiveTab("batch")}
+              className={`flex-1 sm:flex-initial flex items-center justify-center gap-1.5 px-5 py-2.5 text-xs font-semibold uppercase tracking-wider transition-all duration-200 cursor-pointer ${
+                activeTab === "batch"
+                  ? "bg-[#C0AA84] text-rosebery-charcoal rounded-sm shadow-gallery-deep"
+                  : "text-[#D2B4C2] hover:text-white"
+              }`}
+            >
+              <Layers className="w-3.5 h-3.5" />
+              Batch Appraisal
+            </button>
+            <button
               onClick={() => setActiveTab("history")}
-              className={`flex items-center gap-1.5 px-4 py-2 text-xs font-semibold uppercase tracking-wider transition-all duration-200 relative ${
+              className={`flex-1 sm:flex-initial flex items-center justify-center gap-1.5 px-5 py-2.5 text-xs font-semibold uppercase tracking-wider transition-all duration-200 relative cursor-pointer ${
                 activeTab === "history"
                   ? "bg-[#C0AA84] text-rosebery-charcoal rounded-sm shadow-gallery-deep"
                   : "text-[#D2B4C2] hover:text-white"
               }`}
             >
               <History className="w-3.5 h-3.5" />
-              Make Catalogue
+              Review Catalog
               {catalogHistory.length > 0 && (
                 <span className={`absolute -top-1.5 -right-1.5 flex h-4 w-4 items-center justify-center rounded-full text-[9px] font-bold ${
                   activeTab === "history" ? "bg-[#4B0B29] text-white" : "bg-[#C0AA84] text-rosebery-charcoal"
@@ -918,6 +1558,13 @@ export default function App() {
                     setScaleFile={setScaleFile}
                     setScalePreview={setScalePreview}
                     scaleInputRef={scaleInputRef}
+                    catalogs={catalogs}
+                    activeCatalogId={activeCatalogId}
+                    targetOption={targetOption}
+                    setTargetOption={setTargetOption}
+                    newCatalogName={newCatalogName}
+                    setNewCatalogName={setNewCatalogName}
+                    onSwitchCatalog={handleSwitchCatalog}
                   />
 
                   {/* Right Column: Supporting Notes */}
@@ -1027,7 +1674,21 @@ export default function App() {
             )}
 
           </div>
-        ) : (
+        ) : activeTab === "batch" ? (
+          <BatchProcessor 
+            catalogHistory={catalogHistory} 
+            updateHistory={updateHistory} 
+            currency={currency} 
+            catalogs={catalogs}
+            activeCatalogId={activeCatalogId}
+            onSwitchCatalog={handleSwitchCatalog}
+            targetOption={targetOption}
+            setTargetOption={setTargetOption}
+            newCatalogName={newCatalogName}
+            setNewCatalogName={setNewCatalogName}
+            createNewCatalog={createNewCatalog}
+          />
+        ) : activeTab === "history" ? (
           /* Collection Catalog Library log view */
           <CatalogListView
             isHistoryLoading={isHistoryLoading}
@@ -1062,22 +1723,131 @@ export default function App() {
             handleHistoryDragEnd={handleHistoryDragEnd}
             handleHistoryDrop={handleHistoryDrop}
             isGroupedByLot={isGroupedByLot}
+            catalogs={catalogs}
+            activeCatalogId={activeCatalogId}
+            onSwitchCatalog={handleSwitchCatalog}
+            onRenameCatalog={handleRenameCatalog}
+            onDeleteCatalog={handleDeleteCatalog}
+            createNewCatalog={createNewCatalog}
             onLoadHistoryItem={(item) => {
               setAnalysisResult(item.report);
               setPreviewUrl(item.imageUrl);
               setSelectedFile(null);
               setSignatureFile(null);
-              setSignaturePreview(null);
+              setSignaturePreview(item.signatureImageUrl || null);
               setDamageFile(null);
-              setDamagePreview(null);
+              setDamagePreview(item.damageImageUrl || null);
               setScaleFile(null);
-              setScalePreview(null);
+              setScalePreview(item.scaleImageUrl || null);
               setCurrentHistoryItemId(item.id);
               setActiveTab("sandbox");
             }}
           />
+        ) : (
+          <SettingsView
+            currentUser={currentUser}
+            onLogout={handleLogout}
+            catalogs={catalogs}
+            setCatalogs={setCatalogs}
+            activeCatalogId={activeCatalogId}
+            setActiveCatalogId={setActiveCatalogId}
+            setCatalogHistory={setCatalogHistory}
+            onOpenAuthModal={() => {
+              setIsSignUpMode(false);
+              setShowAuthModal(true);
+            }}
+          />
         )}
 
+      {/* USER AUTHENTICATION MODAL */}
+      {showAuthModal && (
+        <div className="fixed inset-0 bg-black/45 backdrop-blur-md z-50 flex items-center justify-center p-4">
+          <div className="bg-white border border-rosebery-border rounded-sm max-w-sm w-full p-6 md:p-8 space-y-6 shadow-xl relative animate-fadeIn">
+            <button
+              onClick={() => {
+                setShowAuthModal(false);
+                setAuthError("");
+                setAuthSuccess("");
+                setAuthUsername("");
+                setAuthPassword("");
+              }}
+              className="absolute top-4 right-4 text-stone-400 hover:text-rosebery-primary transition-colors cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="border-b border-rosebery-border pb-3.5 text-center">
+              <span className="text-[9px] font-mono text-rosebery-primary tracking-[0.2em] font-extrabold uppercase block mb-1">
+                MEMBERSHIP ACCESS
+              </span>
+              <h3 className="text-xl font-serif text-rosebery-charcoal font-semibold">
+                {isSignUpMode ? "Create Collector Account" : "Access Dealer Account"}
+              </h3>
+            </div>
+
+            {authError && (
+              <div className="p-3 bg-rose-50 border border-rose-200 text-rose-800 text-xs rounded-sm animate-fadeIn">
+                {authError}
+              </div>
+            )}
+
+            {authSuccess && (
+              <div className="p-3 bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs rounded-sm animate-fadeIn">
+                {authSuccess}
+              </div>
+            )}
+
+            <form onSubmit={handleAuthSubmit} className="space-y-4">
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-mono text-rosebery-primary font-semibold block">Username or Email</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="Enter username or email address"
+                  value={authUsername}
+                  onChange={(e) => setAuthUsername(e.target.value)}
+                  className="w-full bg-stone-50 border border-rosebery-border rounded-sm px-3 py-2 text-xs focus:outline-none focus:border-rosebery-primary focus:ring-1 focus:ring-rosebery-primary/25"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-mono text-rosebery-primary font-semibold block">Password</label>
+                <input
+                  type="password"
+                  required
+                  placeholder="Enter password"
+                  value={authPassword}
+                  onChange={(e) => setAuthPassword(e.target.value)}
+                  className="w-full bg-stone-50 border border-rosebery-border rounded-sm px-3 py-2 text-xs focus:outline-none focus:border-rosebery-primary focus:ring-1 focus:ring-rosebery-primary/25"
+                />
+              </div>
+
+              <button
+                type="submit"
+                disabled={authLoading}
+                className="w-full bg-rosebery-primary hover:bg-rosebery-primary-hover disabled:bg-stone-300 text-white font-mono text-[11px] font-bold uppercase tracking-wider py-3 rounded-xs flex items-center justify-center gap-1.5 cursor-pointer transition-colors duration-200"
+              >
+                {authLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+                {isSignUpMode ? "Register Account" : "Secure Login"}
+              </button>
+            </form>
+
+            <div className="text-center pt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsSignUpMode(!isSignUpMode);
+                  setAuthError("");
+                  setAuthSuccess("");
+                }}
+                className="text-xs text-rosebery-muted hover:text-rosebery-primary underline font-sans transition-colors cursor-pointer"
+              >
+                {isSignUpMode ? "Already have an account? Log In" : "Need an account? Sign Up"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* EMAIL SUMMARY FILE PREVIEW & DISPATCH DIALOG MODAL */}
       {showEmailModal && (
