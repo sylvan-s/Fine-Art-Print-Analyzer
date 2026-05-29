@@ -113,41 +113,6 @@ app.post("/api/analyze-print", async (req, res) => {
   }
 });
 
-// Send Summary File via Email Endpoint
-app.post("/api/send-email", (req, res) => {
-  try {
-    const { email, subject, summaryText, lotsCount } = req.body;
-
-    if (!email) {
-      return res.status(400).json({ error: "Missing recipient email address." });
-    }
-
-    if (!summaryText) {
-      return res.status(400).json({ error: "Missing summary contents." });
-    }
-
-    console.log("-----------------------------------------");
-    console.log(`[EMAIL DISPATCH] Dispatching PrintMasterAI Summary File`);
-    console.log(`To: ${email}`);
-    console.log(`Subject: ${subject || "Print Appraisal Summary"}`);
-    console.log(`Lots Included: ${lotsCount || 0}`);
-    console.log(`Content:\n${summaryText}`);
-    console.log("-----------------------------------------");
-
-    // Successfully logged and simulated authentic pipeline dispatch
-    return res.json({
-      success: true,
-      message: `Print appraisal summary files were successfully compiled and dispatched to the recipient mailbox at ${email}.`,
-      recipient: email,
-      timestamp: new Date().toISOString()
-    });
-  } catch (err: any) {
-    console.error("Failed to process email delivery:", err);
-    return res.status(500).json({
-      error: err.message || "Internal mail pipeline failure. Check mail configuration."
-    });
-  }
-});
 
 // Propose cohesive Lot Details based on selected art records via Gemini
 app.post("/api/propose-lot-name", async (req, res) => {

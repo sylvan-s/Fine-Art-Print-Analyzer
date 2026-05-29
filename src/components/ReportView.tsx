@@ -469,6 +469,14 @@ export default function ReportView({
                   Scan File: <span className="text-rosebery-charcoal font-semibold">{fileName}</span> {fileSize ? `(${fileSize})` : ""}
                 </span>
               )}
+              {report.modelUsed && (
+                <span className="text-[11px] font-mono bg-rosebery-cream-bg border border-rosebery-border px-3 py-1.5 rounded-full text-rosebery-muted">
+                  Engine: <span className="text-rosebery-charcoal font-semibold">{report.modelUsed}</span>
+                  {report.promptVersion && (
+                    <> (Prompt: <span className="text-rosebery-charcoal font-semibold">{report.promptVersion}</span>)</>
+                  )}
+                </span>
+              )}
               {isEditing ? (
                 <div className="space-y-1">
                   <label className="text-[10px] font-mono text-rosebery-primary uppercase tracking-wider font-semibold block">Creation Period</label>
@@ -1521,6 +1529,12 @@ export default function ReportView({
             <span className="text-[9px] font-mono text-rosebery-charcoal bg-rosebery-cream-bg px-2 py-1 border border-rosebery-border rounded-sm uppercase">
               PM-CERT-{report.artworkTitle.substring(0,4).replace(/[^a-zA-Z]/g, "").toUpperCase()}-{Math.random().toString(36).substring(2,7).toUpperCase()}
             </span>
+            {report.modelUsed && (
+              <span className="text-[9px] font-mono text-rosebery-muted block mt-1">
+                Appraisal Engine: <span className="text-rosebery-charcoal font-semibold">{report.modelUsed}</span>
+                {report.promptVersion && <> (Prompt Version: <span className="text-rosebery-charcoal font-semibold">{report.promptVersion}</span>)</>}
+              </span>
+            )}
           </div>
 
           <div className="text-center space-y-1 w-48 border-t border-dashed border-[#6B5E62] pt-2">

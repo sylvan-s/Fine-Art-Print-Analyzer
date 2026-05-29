@@ -222,13 +222,8 @@ export default function App() {
   const [isHistoryLoading, setIsHistoryLoading] = useState(true);
   const [currentHistoryItemId, setCurrentHistoryItemId] = useState<string | null>(null);
 
-  // Grouping, Backup and Email states
+  // Grouping and Backup states
   const [isGroupedByLot, setIsGroupedByLot] = useState(true);
-  const [emailAddress, setEmailAddress] = useState("");
-  const [showEmailModal, setShowEmailModal] = useState(false);
-  const [emailSending, setEmailSending] = useState(false);
-  const [emailMessage, setEmailMessage] = useState<string | null>(null);
-  const [emailSuccess, setEmailSuccess] = useState(false);
 
   // User Authentication States
   const [currentUser, setCurrentUser] = useState<string | null>(() => {
@@ -1317,6 +1312,16 @@ export default function App() {
     updateHistory(updated);
   };
 
+  const updateMultipleItemsCatalogue = (ids: string[], catalogueId: string | null) => {
+    const updated = catalogHistory.map((item) => {
+      if (ids.includes(item.id)) {
+        return { ...item, catalogue_id: catalogueId };
+      }
+      return item;
+    });
+    updateHistory(updated);
+  };
+
   const downloadJsonBackup = () => {
     const cleanData = catalogHistory.map(({ id, timestamp, imageFileName, imageSize, report, lotNumber, lotTitle }) => ({
       archiveId: id,
@@ -1341,84 +1346,7 @@ export default function App() {
     downloadAnchor.remove();
   };
 
-  const getEmailSummaryText = () => {
-    let text = `PRINTMASTERAI - COMPLETE AUCTION APPRAISAL SUMMARY REPORT\n`;
-    text += `==========================================================\n`;
-    text += `Compiled on: ${new Date().toLocaleDateString("en-US", { month: 'short', day: 'numeric', year: 'numeric' })} at ${new Date().toLocaleTimeString()}\n`;
-    text += `Recipient: ${emailAddress || "(Assigned Mailbox)"}\n\n`;
-    text += `SUMMARY REGISTER OF GROUP LOTS:\n`;
-    text += `----------------------------------------------------------\n`;
 
-    const groupedLots: { [key: string]: { lotNumber: string; lotTitle: string; items: any[] } } = {};
-    catalogHistory.forEach(item => {
-      const lotKey = item.lotNumber ? item.lotNumber.trim().toUpperCase() : "UNASSIGNED";
-      if (!groupedLots[lotKey]) {
-        groupedLots[lotKey] = {
-          lotNumber: item.lotNumber ? item.lotNumber.trim() : "Unassigned Lots",
-          lotTitle: item.lotTitle ? item.lotTitle.trim() : "Individual Archive Specimens",
-          items: []
-        };
-      }
-      groupedLots[lotKey].items.push(item);
-    });
-
-    Object.values(groupedLots).forEach(grp => {
-      text += `\n[${grp.lotNumber.toUpperCase()}] - ${grp.lotTitle}\n`;
-      text += `~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n`;
-      grp.items.forEach((item, idx) => {
-        text += `  ${idx + 1}. Title: ${item.report.artworkTitle}\n`;
-        text += `     Artist: ${item.report.likelyArtist}\n`;
-        text += `     Dimensions: ${item.report.inferredDimensions || "Standard estimated sizes"}\n`;
-        text += `     Auction Estimate: ${item.report.auctionEstimate.formattedEstimate}\n`;
-        text += `     Preservation Grade: ${item.report.conditionNotes.overallGrade}\n\n`;
-      });
-    });
-
-    text += `----------------------------------------------------------\n`;
-    text += `This document serves as an authentic transaction summary of limited fine art print appraisal sheets generated securely by PrintMasterAI.\n`;
-    return text;
-  };
-
-  const sendEmailSummaryApi = async () => {
-    if (!emailAddress) {
-      alert("Please enter a destination email address.");
-      return;
-    }
-    setEmailSending(true);
-    setEmailMessage(null);
-    setEmailSuccess(false);
-
-    try {
-      const payload = {
-        email: emailAddress,
-        subject: "PrintMasterAI Compiled Appraisal Summary & Lot Registry",
-        summaryText: getEmailSummaryText(),
-        lotsCount: catalogHistory.length
-      };
-
-      const res = await fetch("/api/send-email", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify(payload)
-      });
-
-      if (!res.ok) {
-        throw new Error("SMTP server responded with error status.");
-      }
-
-      const data = await res.json();
-      setEmailSuccess(true);
-      setEmailMessage(data.message || "Email summary compiled and dispatched successfully!");
-    } catch (err: any) {
-      console.error("Express mail failure callback:", err);
-      setEmailSuccess(false);
-      setEmailMessage("Express mail simulated pipe logged successfully. To dispatch via your native local computer email software instead, click the Launch Mailbox button below!");
-    } finally {
-      setEmailSending(false);
-    }
-  };
 
   const deleteHistoryItem = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -1719,9 +1647,7 @@ export default function App() {
             updateItemLot={updateItemLot}
             updateItemCatalogue={updateItemCatalogue}
             deleteHistoryItem={deleteHistoryItem}
-            emailAddress={emailAddress}
-            setEmailAddress={setEmailAddress}
-            onOpenEmailModal={() => setShowEmailModal(true)}
+
             catalogViewMode={catalogViewMode}
             setCatalogViewMode={setCatalogViewMode}
             currency={currency}
@@ -1748,6 +1674,8 @@ export default function App() {
             onRenameCatalog={handleRenameCatalog}
             onDeleteCatalog={handleDeleteCatalog}
             createNewCatalog={createNewCatalog}
+            updateMultipleItemsCatalogue={updateMultipleItemsCatalogue}
+            onNavigate={setActiveTab}
             onLoadHistoryItem={(item) => {
               setAnalysisResult(item.report);
               setPreviewUrl(item.imageUrl);
@@ -1869,100 +1797,7 @@ export default function App() {
       )}
 
       {/* EMAIL SUMMARY FILE PREVIEW & DISPATCH DIALOG MODAL */}
-      {showEmailModal && (
-        <div className="fixed inset-0 bg-black/45 backdrop-blur-md z-50 flex items-center justify-center p-4 overflow-y-auto">
-          <div className="bg-rosebery-card border border-rosebery-border rounded-sm max-w-2xl w-full p-6 md:p-8 space-y-6 shadow-xl relative animate-fadeIn my-8">
-            <button
-              onClick={() => {
-                setShowEmailModal(false);
-                setEmailMessage(null);
-                setEmailSuccess(false);
-              }}
-              className="absolute top-4 right-4 text-stone-400 hover:text-rosebery-primary transition-colors cursor-pointer"
-            >
-              <X className="w-5 h-5" />
-            </button>
 
-            <div className="border-b border-rosebery-border pb-3.5">
-              <span className="text-[9px] font-mono text-rosebery-primary tracking-[0.2em] font-extrabold uppercase block mb-1">
-                SUMMARY REGISTER DISPATCH
-              </span>
-              <h3 className="text-xl font-serif text-rosebery-charcoal font-semibold">Appraisal Lot Summary Email File</h3>
-            </div>
-
-            <div className="space-y-4">
-              <p className="text-xs text-rosebery-muted leading-relaxed font-sans">
-                Review the compiled summary report generated for destination index **{emailAddress}**. You can dispatch it immediately either via our backend transmission pipeline or through your local system mailbox email client.
-              </p>
-
-              {/* Editable summary text preview block */}
-              <div className="space-y-1.5">
-                <label className="text-[10px] font-mono text-rosebery-primary font-semibold block">Report Outline Preview (Readonly)</label>
-                <textarea
-                  readOnly
-                  value={getEmailSummaryText()}
-                  rows={10}
-                  className="w-full bg-stone-50 border border-rosebery-border rounded-sm p-4 text-xs font-mono text-rosebery-charcoal focus:outline-none"
-                />
-              </div>
-
-              {/* Info Toast Alerts inside Mail Modal */}
-              {emailMessage && (
-                <div className={`p-4 rounded-sm text-xs leading-relaxed border flex items-start gap-2.5 animate-fadeIn ${
-                  emailSuccess 
-                    ? "bg-emerald-50 border-emerald-200 text-emerald-800" 
-                    : "bg-stone-50 border-rosebery-border text-rosebery-muted"
-                }`}>
-                  {emailSuccess ? (
-                    <CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0 text-emerald-600" />
-                  ) : (
-                    <Info className="w-4 h-4 mt-0.5 shrink-0 text-rosebery-primary" />
-                  )}
-                  <span>{emailMessage}</span>
-                </div>
-              )}
-            </div>
-
-            <div className="pt-4 border-t border-rosebery-border flex flex-col sm:flex-row items-stretch sm:items-center justify-end gap-3 font-mono">
-              {/* Native mail fallback option */}
-              <a
-                href={`mailto:${emailAddress}?subject=PrintMasterAI Appraisal Lot Summary File&body=${encodeURIComponent(getEmailSummaryText())}`}
-                onClick={() => {
-                  // Standard client behavior tracking
-                  setShowEmailModal(false);
-                }}
-                className="bg-rosebery-cream-bg hover:bg-stone-50 border border-rosebery-border text-rosebery-muted hover:text-rosebery-primary px-4 py-3 rounded-xs text-[11px] font-bold text-center uppercase tracking-wider transition-all duration-200 flex items-center justify-center gap-1.5 cursor-pointer"
-              >
-                <Mail className="w-3.5 h-3.5" />
-                <span>Launch Mailbox Client</span>
-              </a>
-
-              {/* Secure simulated server pipeline dispatch */}
-              <button
-                onClick={sendEmailSummaryApi}
-                disabled={emailSending}
-                className={`px-5 py-3 rounded-xs text-[11px] font-bold uppercase tracking-wider text-center transition-all duration-200 flex items-center justify-center gap-1.5 ${
-                  emailSending 
-                    ? "bg-[#E8E2D7] text-stone-400 cursor-not-allowed" 
-                    : "bg-rosebery-primary text-white hover:bg-rosebery-primary-hover cursor-pointer"
-                }`}
-              >
-                {emailSending ? (
-                  <>
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    <span>Dispatched Pipelining...</span>
-                  </>
-                ) : (
-                  <>
-                    <Check className="w-3.5 h-3.5" />
-                    <span>Secure Server Dispatch</span>
-                  </>
-                )}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
       </main>
     </div>

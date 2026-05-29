@@ -41,6 +41,8 @@ export interface PrintAnalysisReport {
   damageAnalysis?: string; // Close-up analysis regarding paper tears, foxing, acidity or pigment preservation
   editionSizeAndPrintNumber?: string; // Verified printing number and overall edition details (e.g., "45 / 100", "Artists Proof", "Unlimited Open Edition")
   visualEvidenceHighlights?: VisualEvidenceHighlight[];
+  modelUsed?: string;
+  promptVersion?: string;
 }
 
 export interface VisualEvidenceHighlight {

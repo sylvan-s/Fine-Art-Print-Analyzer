@@ -1,5 +1,5 @@
 import React from "react";
-import { Download, Mail, Trash2, Folder, Hash, FileText, Check, Loader2, GripVertical, FileSpreadsheet } from "lucide-react";
+import { Download, Mail, Trash2, Folder, Hash, FileText, Check, Loader2, GripVertical, FileSpreadsheet, Sparkles, Layers, History } from "lucide-react";
 import { AnalysisHistoryItem, PrintAnalysisReport, CatalogMetadata } from "../types";
 import HistorySidebar from "./HistorySidebar";
 import LotCreatorModal from "./LotCreatorModal";
@@ -15,9 +15,6 @@ interface CatalogListViewProps {
   updateItemLot: (id: string, lotNumber: string, lotTitle: string) => void;
   updateItemCatalogue: (id: string, catalogueId: string | null) => void;
   deleteHistoryItem: (id: string, e: React.MouseEvent) => void;
-  emailAddress: string;
-  setEmailAddress: (val: string) => void;
-  onOpenEmailModal: () => void;
   catalogViewMode: "inspector" | "tabular";
   setCatalogViewMode: (mode: "inspector" | "tabular") => void;
   currency: "USD" | "GBP" | "EUR";
@@ -46,6 +43,8 @@ interface CatalogListViewProps {
   onRenameCatalog: (oldId: string, newId: string, name: string) => Promise<void>;
   onDeleteCatalog: (id: string) => Promise<void>;
   createNewCatalog: (name: string) => Promise<string>;
+  updateMultipleItemsCatalogue: (ids: string[], catalogueId: string | null) => void;
+  onNavigate: (tab: "sandbox" | "batch" | "history" | "settings") => void;
 }
 
 const getCurrencySymbol = (code: string) => {
@@ -83,9 +82,6 @@ export default function CatalogListView({
   updateItemLot,
   updateItemCatalogue,
   deleteHistoryItem,
-  emailAddress,
-  setEmailAddress,
-  onOpenEmailModal,
   catalogViewMode,
   setCatalogViewMode,
   currency,
@@ -114,11 +110,12 @@ export default function CatalogListView({
   onRenameCatalog,
   onDeleteCatalog,
   createNewCatalog,
+  updateMultipleItemsCatalogue,
+  onNavigate,
 }: CatalogListViewProps) {
   const currentCatalog = catalogs.find((c) => c.id === activeCatalogId);
 
-  const [editName, setEditName] = React.useState(currentCatalog?.name || "");
-  const [editId, setEditId] = React.useState(currentCatalog?.id || "");
+  const [localCatalogNames, setLocalCatalogNames] = React.useState<Record<string, string>>({});
   const [isSavingRename, setIsSavingRename] = React.useState(false);
   const [renameError, setRenameError] = React.useState<string | null>(null);
 
@@ -127,12 +124,53 @@ export default function CatalogListView({
   const [isDeletingCatalog, setIsDeletingCatalog] = React.useState(false);
   const [selectedCatalogueFilter, setSelectedCatalogueFilter] = React.useState<string>("all");
 
-  const handleCreateEmptyCatalog = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newCatalogNameInput.trim()) return;
+  const handleInlineRename = async (catalogId: string, newName: string) => {
+    if (!newName.trim()) return;
+    const cat = catalogs.find(c => c.id === catalogId);
+    if (cat && cat.name === newName.trim()) {
+      setLocalCatalogNames(prev => {
+        const copy = { ...prev };
+        delete copy[catalogId];
+        return copy;
+      });
+      return;
+    }
+    setIsSavingRename(true);
+    setRenameError(null);
+    try {
+      await onRenameCatalog(catalogId, catalogId, newName.trim());
+      setLocalCatalogNames(prev => {
+        const copy = { ...prev };
+        delete copy[catalogId];
+        return copy;
+      });
+    } catch (err: any) {
+      setRenameError(err.message || "Failed to rename catalogue.");
+      alert(err.message || "Failed to rename catalogue.");
+    } finally {
+      setIsSavingRename(false);
+    }
+  };
+
+  const handleInlineDelete = async (catalogId: string, catalogName: string) => {
+    const isConfirmed = window.confirm(
+      `Are you sure you want to delete the catalogue "${catalogName}"?\n\n(This will delete the catalogue reference. Its associated items will become uncatalogued, but no appraisal data will be deleted.)`
+    );
+    if (!isConfirmed) return;
+
+    try {
+      await onDeleteCatalog(catalogId);
+    } catch (err: any) {
+      console.error("Failed to delete catalogue:", err);
+      alert(err.message || "Failed to delete catalogue.");
+    }
+  };
+
+  const handleCreateEmptyCatalog = async (name: string) => {
+    if (!name.trim()) return;
     setIsCreatingCatalog(true);
     try {
-      await createNewCatalog(newCatalogNameInput.trim());
+      await createNewCatalog(name.trim());
       setNewCatalogNameInput("");
     } catch (err: any) {
       console.error("Failed to create empty catalogue:", err);
@@ -156,26 +194,6 @@ export default function CatalogListView({
       alert(err.message || "Failed to delete catalogue.");
     } finally {
       setIsDeletingCatalog(false);
-    }
-  };
-
-  React.useEffect(() => {
-    setEditName(currentCatalog?.name || "");
-    setEditId(currentCatalog?.id || "");
-    setRenameError(null);
-  }, [activeCatalogId, currentCatalog]);
-
-  const handleRenameSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!editName.trim()) return;
-    setIsSavingRename(true);
-    setRenameError(null);
-    try {
-      await onRenameCatalog(activeCatalogId, activeCatalogId, editName.trim());
-    } catch (err: any) {
-      setRenameError(err.message || "Failed to rename catalogue.");
-    } finally {
-      setIsSavingRename(false);
     }
   };
   const [filterFilename, setFilterFilename] = React.useState("");
@@ -232,10 +250,38 @@ export default function CatalogListView({
     };
   }, [filteredHistory, currency]);
 
-  const downloadCsvManifest = () => {
-    const itemsToExport = selectedItemIds.length > 0
-      ? filteredHistory.filter(item => selectedItemIds.includes(item.id))
-      : filteredHistory;
+  const allVisibleSelected = React.useMemo(() => {
+    return filteredHistory.length > 0 && filteredHistory.every(item => selectedItemIds.includes(item.id));
+  }, [filteredHistory, selectedItemIds]);
+
+  const handleToggleSelectAllVisible = () => {
+    if (allVisibleSelected) {
+      const visibleIds = filteredHistory.map(item => item.id);
+      setSelectedItemIds(selectedItemIds.filter(id => !visibleIds.includes(id)));
+    } else {
+      const visibleIds = filteredHistory.map(item => item.id);
+      const union = Array.from(new Set([...selectedItemIds, ...visibleIds]));
+      setSelectedItemIds(union);
+    }
+  };
+
+
+  const downloadCsvManifest = (catalogueId?: string) => {
+    let itemsToExport = [];
+    let catalogName = "printmaster_manifest";
+
+    if (catalogueId) {
+      itemsToExport = catalogHistory.filter(item => item.catalogue_id === catalogueId);
+      const cat = catalogs.find(c => c.id === catalogueId);
+      if (cat) {
+        // Sanitize catalogue name to keep only alphanumeric chars, underscores, and hyphens
+        catalogName = cat.name.trim().replace(/[\s\W]+/g, "_");
+      }
+    } else {
+      itemsToExport = selectedItemIds.length > 0
+        ? filteredHistory.filter(item => selectedItemIds.includes(item.id))
+        : filteredHistory;
+    }
 
     if (itemsToExport.length === 0) {
       alert("No items found to export.");
@@ -260,7 +306,9 @@ export default function CatalogListView({
       "Currency",
       "Inferred Dimensions",
       "Visual Description",
-      "Historical Context"
+      "Historical Context",
+      "Appraisal Model",
+      "Prompting Type"
     ];
 
     const escapeCsv = (val: any) => {
@@ -290,7 +338,9 @@ export default function CatalogListView({
         rep.auctionEstimate.currency,
         rep.inferredDimensions || "",
         rep.visualDescription,
-        rep.historicalContext
+        rep.historicalContext,
+        rep.modelUsed || "",
+        rep.promptVersion || ""
       ].map(escapeCsv).join(",");
       csvRows.push(row);
     });
@@ -300,7 +350,8 @@ export default function CatalogListView({
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.setAttribute("href", url);
-    link.setAttribute("download", `printmaster_manifest_${new Date().toISOString().split("T")[0]}.csv`);
+    const formattedDate = new Date().toISOString().split("T")[0];
+    link.setAttribute("download", `${catalogName}_${formattedDate}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -322,6 +373,38 @@ export default function CatalogListView({
 
   return (
     <div className="space-y-6 animate-fadeIn">
+      {/* Page Navigation Shortcut Menu */}
+      <div className="flex flex-wrap items-center justify-between gap-4 bg-white border border-rosebery-border rounded-sm p-4 shadow-gallery-soft">
+        <div className="flex items-center gap-2">
+          <h2 className="text-xs font-mono font-bold text-rosebery-primary uppercase tracking-wider">
+            Quick Navigation
+          </h2>
+        </div>
+        <div className="flex flex-wrap items-center gap-2.5">
+          <button
+            onClick={() => onNavigate("sandbox")}
+            className="flex items-center gap-1.5 px-4 py-2 border border-rosebery-border hover:border-rosebery-primary rounded-xs text-xs font-mono font-bold text-rosebery-primary bg-rosebery-cream-bg/20 hover:bg-rosebery-cream-bg transition-colors cursor-pointer"
+          >
+            <Sparkles className="w-3.5 h-3.5 text-rosebery-primary" />
+            <span>New Appraisal</span>
+          </button>
+          <button
+            onClick={() => onNavigate("batch")}
+            className="flex items-center gap-1.5 px-4 py-2 border border-rosebery-border hover:border-rosebery-primary rounded-xs text-xs font-mono font-bold text-rosebery-primary bg-rosebery-cream-bg/20 hover:bg-rosebery-cream-bg transition-colors cursor-pointer"
+          >
+            <Layers className="w-3.5 h-3.5 text-rosebery-primary" />
+            <span>Batch Appraisal</span>
+          </button>
+          <button
+            disabled
+            className="flex items-center gap-1.5 px-4 py-2 border border-rosebery-primary bg-[#4B0B29] text-white rounded-xs text-xs font-mono font-bold cursor-default"
+          >
+            <History className="w-3.5 h-3.5" />
+            <span>Review Catalogs</span>
+          </button>
+        </div>
+      </div>
+
       {/* Catalogue Manager & Editor */}
       <div className="bg-rosebery-card border border-rosebery-border rounded-sm p-5 md:p-6 shadow-gallery-soft space-y-4">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-rosebery-border pb-3">
@@ -331,102 +414,122 @@ export default function CatalogListView({
               Catalogue Manager
             </h3>
             <p className="text-xs text-rosebery-muted mt-0.5">
-              allocate appraised images to catalogs
+              allocate appraised images to catalogs (active: <strong className="text-rosebery-primary">{currentCatalog?.name || activeCatalogId}</strong>)
             </p>
           </div>
+        </div>
 
-          <div className="flex items-center gap-2">
-            <label className="text-xs font-serif text-rosebery-charcoal whitespace-nowrap">
-              Active Catalogue:
+        <div className="pt-3 border-t border-rosebery-border/60 space-y-4">
+          <div className="space-y-1">
+            <label className="text-[9px] font-mono text-rosebery-primary font-bold uppercase tracking-wider block">
+              Available Catalogues
             </label>
-            <select
-              value={activeCatalogId}
-              onChange={(e) => onSwitchCatalog(e.target.value)}
-              className="bg-white border border-rosebery-border rounded-sm px-3 py-1.5 text-xs text-rosebery-charcoal outline-none focus:border-rosebery-primary font-serif cursor-pointer"
-            >
-              {catalogs.map((cat) => (
-                <option key={cat.id} value={cat.id}>
-                  {cat.name} ({cat.id})
-                </option>
-              ))}
-            </select>
-          </div>
-        </div>
+            <div className="border border-rosebery-border/50 rounded-sm p-3 bg-stone-50/50 space-y-2 max-h-[300px] overflow-y-auto pr-2 scrollbar-thin scrollbar-thumb-stone-200">
+              {catalogs.map((cat) => {
+                const isCurrentActive = cat.id === activeCatalogId;
+                const currentNameValue = localCatalogNames[cat.id] !== undefined ? localCatalogNames[cat.id] : cat.name;
+                const count = catalogHistory.filter(item => item.catalogue_id === cat.id).length;
+                const isChanged = currentNameValue !== cat.name;
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-3 border-t border-rosebery-border/60">
-          {/* Left Column: Rename Catalogue */}
-          <form onSubmit={handleRenameSubmit} className="space-y-3">
-            <div className="space-y-1">
-              <label className="text-[9px] font-mono text-rosebery-primary font-bold uppercase tracking-wider block">
-                Rename Catalogue Name
-              </label>
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  required
-                  value={editName}
-                  onChange={(e) => setEditName(e.target.value)}
-                  className="flex-1 bg-white border border-rosebery-border focus:border-rosebery-primary rounded-sm px-3 py-1.5 text-xs text-rosebery-charcoal outline-none"
-                />
-                <button
-                  type="submit"
-                  disabled={isSavingRename || editName.trim() === currentCatalog?.name}
-                  className="bg-rosebery-primary hover:bg-rosebery-primary-hover disabled:bg-stone-200 disabled:text-stone-400 text-white font-mono text-[10px] font-bold tracking-wider uppercase px-4 py-2 rounded-sm flex items-center justify-center gap-1.5 cursor-pointer transition-all duration-200"
-                >
-                  {isSavingRename ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
-                  Rename
-                </button>
+                return (
+                  <div key={cat.id} className={`flex items-center gap-3 p-1.5 rounded-sm border transition-all duration-200 ${isCurrentActive ? 'bg-white border-rosebery-primary/30 shadow-xs' : 'bg-transparent border-transparent hover:bg-stone-100/30'}`}>
+                    <label className="flex items-center justify-center cursor-pointer p-1" title="Set as active catalogue">
+                      <input
+                        type="radio"
+                        name="activeCatalogSelector"
+                        checked={isCurrentActive}
+                        onChange={() => onSwitchCatalog(cat.id)}
+                        className="w-3.5 h-3.5 text-rosebery-primary border-stone-300 focus:ring-rosebery-primary cursor-pointer accent-[#4C0B2A]"
+                      />
+                    </label>
+                    <div className="flex-1 flex items-center gap-2">
+                      <input
+                        type="text"
+                        value={currentNameValue}
+                        onChange={(e) => setLocalCatalogNames(prev => ({ ...prev, [cat.id]: e.target.value }))}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            handleInlineRename(cat.id, currentNameValue);
+                          }
+                        }}
+                        onBlur={() => handleInlineRename(cat.id, currentNameValue)}
+                        className="flex-1 bg-transparent hover:bg-stone-50/30 focus:bg-white text-xs border border-transparent focus:border-rosebery-border rounded-sm px-2 py-1 outline-none text-rosebery-charcoal font-sans transition-colors"
+                        title="Edit catalogue name inline"
+                      />
+                      {isChanged && (
+                        <button
+                          type="button"
+                          onClick={() => handleInlineRename(cat.id, currentNameValue)}
+                          disabled={isSavingRename}
+                          className="p-1 rounded bg-rosebery-primary text-white hover:bg-[#5E1236] transition-colors cursor-pointer"
+                          title="Save changes"
+                        >
+                          <Check className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                      <span className="text-[10px] text-rosebery-muted font-mono whitespace-nowrap bg-stone-100/60 border border-stone-200/40 rounded-xs px-1.5 py-0.5 mr-1">
+                        {count} {count === 1 ? 'item' : 'items'}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => downloadCsvManifest(cat.id)}
+                        className="p-1 text-stone-400 hover:text-rosebery-primary hover:bg-stone-100 rounded transition-colors cursor-pointer flex items-center justify-center"
+                        title="Download CSV manifest for this catalogue"
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleInlineDelete(cat.id, cat.name)}
+                        className="p-1 text-stone-400 hover:text-red-600 hover:bg-stone-100 rounded transition-colors cursor-pointer flex items-center justify-center"
+                        title="Delete catalogue reference"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+
+              {/* Inline Add New Catalogue Row at the bottom */}
+              <div className="flex items-center gap-3 p-1.5 rounded-sm border border-dashed border-stone-300 bg-[#F7F6F4]/80">
+                <div className="w-3.5 h-3.5 flex items-center justify-center text-stone-400 font-bold select-none text-xs ml-1">
+                  +
+                </div>
+                <div className="flex-1 flex items-center gap-2">
+                  <input
+                    type="text"
+                    placeholder="Add new catalogue (type name & press Enter)..."
+                    value={newCatalogNameInput}
+                    onChange={(e) => setNewCatalogNameInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        handleCreateEmptyCatalog(newCatalogNameInput);
+                      }
+                    }}
+                    disabled={isCreatingCatalog}
+                    className="flex-1 bg-transparent placeholder:text-stone-400 hover:bg-stone-200/20 focus:bg-white text-xs border border-transparent focus:border-rosebery-border rounded-sm px-2 py-1 outline-none text-rosebery-charcoal font-sans transition-colors"
+                  />
+                  {newCatalogNameInput.trim() && (
+                    <button
+                      type="button"
+                      onClick={() => handleCreateEmptyCatalog(newCatalogNameInput)}
+                      disabled={isCreatingCatalog}
+                      className="p-1 rounded bg-stone-500 text-white hover:bg-stone-600 transition-colors cursor-pointer"
+                      title="Create new catalogue"
+                    >
+                      {isCreatingCatalog ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
-            {renameError && (
-              <p className="text-[11px] font-mono text-red-600 mt-1">{renameError}</p>
-            )}
-          </form>
-
-          {/* Right Column: Create Empty Catalogue */}
-          <form onSubmit={handleCreateEmptyCatalog} className="space-y-3">
-            <div className="space-y-1">
-              <label className="text-[9px] font-mono text-rosebery-primary font-bold uppercase tracking-wider block">
-                Create New Empty Catalogue
-              </label>
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  required
-                  placeholder="Enter name (e.g., Lithographs 2026)"
-                  value={newCatalogNameInput}
-                  onChange={(e) => setNewCatalogNameInput(e.target.value)}
-                  className="flex-1 bg-white border border-rosebery-border focus:border-rosebery-primary rounded-sm px-3 py-1.5 text-xs text-rosebery-charcoal outline-none"
-                />
-                <button
-                  type="submit"
-                  disabled={isCreatingCatalog || !newCatalogNameInput.trim()}
-                  className="bg-[#C0AA84] hover:bg-[#D7C3A2] disabled:bg-stone-200 disabled:text-stone-400 text-rosebery-charcoal font-mono text-[10px] font-bold tracking-wider uppercase px-4 py-2 rounded-sm flex items-center justify-center gap-1.5 cursor-pointer transition-all duration-200"
-                >
-                  {isCreatingCatalog ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Folder className="w-3.5 h-3.5" />}
-                  Create
-                </button>
-              </div>
-            </div>
-          </form>
-        </div>
-
-        {/* Danger Zone: Delete Catalogue */}
-        <div className="pt-4 border-t border-rosebery-border/60 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <div>
-            <p className="text-xs font-semibold text-rosebery-charcoal font-serif">Danger Zone</p>
-            <p className="text-[10px] text-rosebery-muted">
-              Permanently delete this catalogue and all associated scanned items.
-            </p>
           </div>
-          <button
-            onClick={handleDeleteCurrentCatalog}
-            disabled={isDeletingCatalog}
-            className="border border-red-200 hover:border-red-300 bg-red-50/50 hover:bg-red-50 text-red-800 disabled:bg-stone-200 disabled:text-stone-400 font-mono text-[10px] font-bold uppercase tracking-wider px-4 py-2.5 rounded-sm flex items-center justify-center gap-1.5 cursor-pointer transition-colors duration-200"
-          >
-            {isDeletingCatalog ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
-            Delete Current Catalogue
-          </button>
+          {renameError && (
+            <p className="text-[11px] font-mono text-red-600 mt-1">{renameError}</p>
+          )}
         </div>
       </div>
 
@@ -439,17 +542,42 @@ export default function CatalogListView({
               Please select one or more images from the database below to group them into custom lots, export CSVs, or run actions.
             </p>
           </div>
-          <div className="flex flex-col items-start md:items-end gap-1.5 shrink-0">
-            <div className="text-xs font-mono text-rosebery-primary uppercase tracking-wider bg-stone-50 px-3.5 py-1.5 border border-rosebery-border rounded-sm font-semibold">
-              {filteredHistory.length === catalogHistory.length 
-                ? (catalogHistory.length === 0 ? "Empty Database" : `${catalogHistory.length} Total Masterpieces`)
-                : `${filteredHistory.length} of ${catalogHistory.length} Filtered`}
-            </div>
-            {filteredHistory.length > 0 && (
-              <span className="text-[10px] font-mono text-stone-500 uppercase tracking-wider">
-                Est. Total Value: <strong className="text-rosebery-charcoal">{getCurrencySymbol(currency)}{totalEstimates.low.toLocaleString()} - {getCurrencySymbol(currency)}{totalEstimates.high.toLocaleString()}</strong>
+          <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4 shrink-0">
+            {/* Global Currency Preference Selector */}
+            <div className="flex items-center gap-2 border border-rosebery-border bg-stone-50 px-3 py-1 rounded-sm shadow-xs">
+              <span className="text-[10px] font-mono text-rosebery-muted uppercase tracking-wider font-semibold">
+                Currency:
               </span>
-            )}
+              <div className="flex border border-rosebery-border rounded-xs overflow-hidden bg-rosebery-card">
+                {(["USD", "GBP", "EUR"] as const).map((curr) => (
+                  <button
+                    key={curr}
+                    type="button"
+                    onClick={() => setCurrency(curr)}
+                    className={`px-2 py-0.5 text-[10px] font-mono transition-colors cursor-pointer ${
+                      currency === curr
+                        ? "bg-rosebery-primary text-white font-bold"
+                        : "text-rosebery-muted hover:text-rosebery-primary hover:bg-rosebery-cream-bg"
+                    }`}
+                  >
+                    {curr}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex flex-col items-start sm:items-end gap-1">
+              <div className="text-xs font-mono text-rosebery-primary uppercase tracking-wider bg-stone-50 px-3.5 py-1.5 border border-rosebery-border rounded-sm font-semibold">
+                {filteredHistory.length === catalogHistory.length 
+                  ? (catalogHistory.length === 0 ? "Empty Database" : `${catalogHistory.length} Total Masterpieces`)
+                  : `${filteredHistory.length} of ${catalogHistory.length} Filtered`}
+              </div>
+              {filteredHistory.length > 0 && (
+                <span className="text-[10px] font-mono text-stone-500 uppercase tracking-wider">
+                  Est. Total Value: <strong className="text-rosebery-charcoal">{getCurrencySymbol(currency)}{totalEstimates.low.toLocaleString()} - {getCurrencySymbol(currency)}{totalEstimates.high.toLocaleString()}</strong>
+                </span>
+              )}
+            </div>
           </div>
         </div>
 
@@ -478,7 +606,7 @@ export default function CatalogListView({
           {/* 2. Filename Text Search Filter */}
           <div className="space-y-1">
             <label className="text-[10px] font-mono text-rosebery-primary font-bold uppercase tracking-wider block">
-              Search Filename
+              Search Image Filename
             </label>
             <input
               type="text"
@@ -492,7 +620,7 @@ export default function CatalogListView({
           {/* 3. Upload Date Filter */}
           <div className="space-y-1">
             <label className="text-[10px] font-mono text-rosebery-primary font-bold uppercase tracking-wider block">
-              Filter by Upload Date
+              Filter by Image Upload Date
             </label>
             <div className="flex gap-1.5 items-center">
               <input
@@ -518,59 +646,15 @@ export default function CatalogListView({
 
       {filteredHistory.length > 0 && (
         <div className="bg-rosebery-card border border-rosebery-border rounded-sm p-4 flex flex-col gap-4 shadow-gallery-soft animate-fadeIn">
-          {/* Export CSV & Email dispatch bar */}
-          <div className="flex flex-wrap items-center gap-3.5 border-b border-rosebery-border/50 pb-4">
-            <button
-              onClick={downloadCsvManifest}
-              className="bg-rosebery-cream-bg hover:bg-stone-50 border border-rosebery-border hover:border-rosebery-primary p-2.5 rounded-xs text-xs font-mono text-rosebery-primary flex items-center gap-2 transition-all cursor-pointer font-bold"
-              title={selectedItemIds.length > 0 ? "Export selected items to CSV manifest" : "Export all items to CSV manifest"}
-            >
-              <FileSpreadsheet className="w-3.5 h-3.5 text-rosebery-primary" />
-              <span>Export CSV ({selectedItemIds.length > 0 ? `Selected: ${selectedItemIds.length}` : "All"})</span>
-            </button>
-
-            <div className="h-4 w-px bg-[#E8E2D7] hidden sm:block" />
-
-            {/* Combined Email summary section with input and visual trigger */}
-            <div className="flex items-center bg-rosebery-cream-bg border border-rosebery-border p-1 rounded-sm w-full sm:w-auto">
-              <input
-                type="email"
-                placeholder="Enter Recipient Email..."
-                value={emailAddress}
-                onChange={(e) => setEmailAddress(e.target.value)}
-                className="bg-transparent text-xs text-rosebery-charcoal max-w-[200px] px-2.5 py-1 outline-none border-none font-mono placeholder:text-stone-400 focus:ring-0"
-              />
-              <button
-                onClick={() => {
-                  if (!emailAddress || !emailAddress.includes("@")) {
-                    alert("Please specify a valid email address first.");
-                    return;
-                  }
-                  onOpenEmailModal();
-                }}
-                className="bg-rosebery-primary hover:bg-rosebery-primary-hover text-white font-mono font-bold text-[10px] tracking-wider uppercase px-3 py-1.5 rounded-xs transition-colors flex items-center gap-1 cursor-pointer shrink-0"
-              >
-                <Mail className="w-3 h-3" />
-                <span>Email summary</span>
-              </button>
-            </div>
-          </div>
-
           {/* Header row with selection info & clear button */}
           <div className="flex flex-col md:flex-row items-center justify-between gap-4 border-b border-rosebery-border/50 pb-3">
             <div className="flex flex-wrap items-center gap-3">
               <span className="text-xs font-serif text-rosebery-muted">
-                {selectedItemIds.length > 0 ? (
+                {selectedItemIds.length > 0 && (
                   <>
                     Active Group Lot:{" "}
                     <strong className="text-rosebery-primary font-mono text-xs font-bold">{selectedItemIds.length}</strong>{" "}
                     items selected for grouping
-                  </>
-                ) : (
-                  <>
-                    Historical Appraised Library:{" "}
-                    <strong className="text-rosebery-charcoal font-mono text-xs font-bold">{catalogHistory.length}</strong>{" "}
-                    total records
                   </>
                 )}
               </span>
@@ -597,31 +681,8 @@ export default function CatalogListView({
               )}
             </div>
 
-            {/* Layout selector and global currency */}
+            {/* Layout selector */}
             <div className="flex flex-wrap items-center gap-3.5">
-              {/* Global Currency Preference Selector applying across all valuations */}
-              <div className="flex items-center gap-2 border border-rosebery-border bg-stone-50 px-3.5 py-1.5 rounded-xs">
-                <span className="text-[10px] font-mono text-rosebery-muted uppercase tracking-wider font-semibold">
-                  Global Currency:
-                </span>
-                <div className="flex border border-rosebery-border rounded-xs overflow-hidden bg-rosebery-card">
-                  {(["USD", "GBP", "EUR"] as const).map((curr) => (
-                    <button
-                      key={curr}
-                      onClick={() => setCurrency(curr)}
-                      className={`px-2.5 py-0.5 text-[10px] font-mono transition-colors cursor-pointer ${
-                        currency === curr
-                          ? "bg-rosebery-primary text-white font-bold"
-                          : "text-rosebery-muted hover:text-rosebery-primary hover:bg-rosebery-cream-bg"
-                      }`}
-                    >
-                      {curr}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Layout selector (Inspector vs Tabular list) */}
               <div className="flex items-center gap-2 border border-rosebery-border bg-stone-50 px-3.5 py-1.5 rounded-xs">
                 <span className="text-[10px] font-mono text-rosebery-muted uppercase tracking-wider font-semibold">
                   Layout:
@@ -720,9 +781,25 @@ export default function CatalogListView({
                         className="relative px-3 py-3 border-r border-rosebery-border font-mono text-[9px] uppercase font-bold tracking-wider text-rosebery-primary select-none text-left"
                       >
                         <div className="flex items-center justify-between">
-                          <span className={col.key === "checkbox" ? "mx-auto text-xs font-black font-sans" : ""}>
-                            {col.label}
-                          </span>
+                          {col.key === "checkbox" ? (
+                            <div
+                              onClick={handleToggleSelectAllVisible}
+                              className="mx-auto flex items-center justify-center cursor-pointer p-1"
+                              title={allVisibleSelected ? "Deselect all visible items" : "Select all visible items"}
+                            >
+                              <div
+                                className={`w-3.5 h-3.5 rounded-xs border flex items-center justify-center transition-all ${
+                                  allVisibleSelected
+                                    ? "bg-rosebery-primary border-rosebery-primary text-white"
+                                    : "border-stone-300 hover:border-rosebery-primary bg-white"
+                                }`}
+                              >
+                                {allVisibleSelected && <Check className="w-2.5 h-2.5 stroke-[3]" />}
+                              </div>
+                            </div>
+                          ) : (
+                            <span>{col.label}</span>
+                          )}
                         </div>
                         {col.resizable && (
                           <div
@@ -1009,6 +1086,7 @@ export default function CatalogListView({
             selectedHistoryId={selectedHistoryId}
             setSelectedHistoryId={setSelectedHistoryId}
             selectedItemIds={selectedItemIds}
+            setSelectedItemIds={setSelectedItemIds}
             toggleItemSelection={toggleItemSelection}
             isGroupedByLot={isGroupedByLot}
             draggedIndex={draggedIndex}
@@ -1019,6 +1097,8 @@ export default function CatalogListView({
             handleHistoryDrop={handleHistoryDrop}
             deleteHistoryItem={deleteHistoryItem}
             updateHistory={updateHistory}
+            catalogs={catalogs}
+            updateMultipleItemsCatalogue={updateMultipleItemsCatalogue}
           />
 
           {/* Catalog detail visualizer */}

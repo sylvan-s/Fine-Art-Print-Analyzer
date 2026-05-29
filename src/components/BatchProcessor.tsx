@@ -62,7 +62,7 @@ interface BatchFile {
   sourceType: "local" | "upload";
   localPath?: string; // used for local directory files
   fileObject?: File;   // used for browser upload files
-  status: "pending" | "detecting" | "splitting" | "appraising" | "completed" | "failed";
+  status: "pending" | "detecting" | "splitting" | "appraising" | "completed" | "failed" | "already_appraised";
   error?: string;
   splitItemsCount?: number;
   lotNumber?: string;
@@ -144,15 +144,25 @@ export default function BatchProcessor({
           setSelectedFolderName(pathParts[0]);
         }
       }
-      const newFiles = imageList.map((file) => ({
-        id: crypto.randomUUID(),
-        name: file.name,
-        sourceType: "upload",
-        fileObject: file,
-        status: "pending"
-      }));
+      const newFiles = imageList.map((file) => {
+        const isAlreadyAppraised = itemDatabaseRef.current.some(
+          (item) => {
+            const dbName = item.imageFileName.toLowerCase();
+            const currName = file.name.toLowerCase();
+            return dbName === currName || dbName.startsWith(currName + "_");
+          }
+        );
+        return {
+          id: crypto.randomUUID(),
+          name: file.name,
+          sourceType: "upload" as const,
+          fileObject: file,
+          status: (isAlreadyAppraised ? "already_appraised" : "pending") as BatchFile["status"]
+        };
+      });
       setBatchFiles((prev) => [...prev, ...newFiles]);
-      addLog(`Selected browser directory. Found ${imageList.length} images.`);
+      const alreadyAppraisedCount = newFiles.filter(f => f.status === "already_appraised").length;
+      addLog(`Selected browser directory. Found ${imageList.length} images. (${alreadyAppraisedCount} already appraised)`);
     } else {
       addLog("No valid image files found in browser selected folder.");
     }
@@ -235,7 +245,27 @@ export default function BatchProcessor({
     // Loop sequentially
     for (let i = 0; i < batchFiles.length; i++) {
       const file = batchFiles[i];
-      if (file.status === "completed") continue;
+      if (file.status === "completed" || file.status === "already_appraised") {
+        if (file.status === "already_appraised") {
+          addLog(`Skipping already appraised file: ${file.name}`);
+        }
+        continue;
+      }
+
+      // Dynamic check against the latest updated database history
+      const dynamicallyAlreadyAppraised = targetHistory.some(
+        (item) => {
+          const dbName = item.imageFileName.toLowerCase();
+          const currName = file.name.toLowerCase();
+          return dbName === currName || dbName.startsWith(currName + "_");
+        }
+      );
+
+      if (dynamicallyAlreadyAppraised) {
+        updateFileStatus(file.id, "already_appraised");
+        addLog(`Skipping dynamically identified duplicate appraised file: ${file.name}`);
+        continue;
+      }
 
       setCurrentFileIndex(i);
       updateFileStatus(file.id, "detecting");
@@ -645,9 +675,6 @@ export default function BatchProcessor({
     <div className="space-y-8 animate-fadeIn text-rosebery-text-normal">
       {/* Introduction */}
       <div className="text-center space-y-2 max-w-2xl mx-auto">
-        <span className="inline-flex bg-rosebery-cream-bg border border-rosebery-border px-3.5 py-1 rounded-sm text-xs font-serif text-rosebery-primary font-semibold uppercase tracking-widest">
-          LOT ENGINE BATCH CONSOLE
-        </span>
         <h2 className="text-3xl font-serif font-semibold text-rosebery-charcoal tracking-wide">
           Automated Batch Appraisal
         </h2>
@@ -783,7 +810,9 @@ export default function BatchProcessor({
                           ? "border-emerald-100 bg-emerald-50/40 text-emerald-900"
                           : file.status === "failed"
                             ? "border-rose-100 bg-rose-50/40 text-rose-900"
-                            : "border-stone-100 bg-stone-50/30 text-rosebery-muted"
+                            : file.status === "already_appraised"
+                              ? "border-indigo-100 bg-indigo-50/20 text-indigo-900"
+                              : "border-stone-100 bg-stone-50/30 text-rosebery-muted"
                     }`}
                   >
                     <div className="flex items-center gap-2.5 truncate max-w-[70%]">
@@ -808,9 +837,11 @@ export default function BatchProcessor({
                             ? "bg-emerald-50 border-emerald-200 text-emerald-800"
                             : file.status === "failed"
                               ? "bg-rose-50 border-rose-200 text-rose-800"
-                              : "bg-white border-stone-200 text-stone-400"
+                              : file.status === "already_appraised"
+                                ? "bg-indigo-50 border-indigo-200 text-indigo-800"
+                                : "bg-white border-stone-200 text-stone-400"
                       }`}>
-                        {file.status}
+                        {file.status === "already_appraised" ? "already appraised" : file.status}
                       </span>
                     </div>
                   </div>

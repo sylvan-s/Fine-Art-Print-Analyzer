@@ -390,7 +390,10 @@ export class ConfigurableGeminiAppraiser implements AppraisalMethod {
       throw new Error("No output text received from Gemini analysis.");
     }
 
-    return JSON.parse(textOutput.trim());
+    const report = JSON.parse(textOutput.trim());
+    report.modelUsed = this.config.modelName;
+    report.promptVersion = this.config.promptKey;
+    return report;
   }
 }
 
@@ -758,7 +761,10 @@ export class ConfigurableClaudeAppraiser implements AppraisalMethod {
       throw new Error("Claude did not return a valid structured tool call report.");
     }
 
-    return toolUseBlock.input as PrintAnalysisReport;
+    const report = toolUseBlock.input as PrintAnalysisReport;
+    report.modelUsed = this.config.modelName;
+    report.promptVersion = this.config.promptKey;
+    return report;
   }
 }
 

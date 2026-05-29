@@ -1,12 +1,13 @@
 import React from "react";
 import { Check, GripVertical, Trash2 } from "lucide-react";
-import { AnalysisHistoryItem } from "../types";
+import { AnalysisHistoryItem, CatalogMetadata } from "../types";
 
 interface HistorySidebarProps {
   catalogHistory: AnalysisHistoryItem[];
   selectedHistoryId: string | null;
   setSelectedHistoryId: (id: string | null) => void;
   selectedItemIds: string[];
+  setSelectedItemIds: (ids: string[]) => void;
   toggleItemSelection: (id: string) => void;
   isGroupedByLot: boolean;
   draggedIndex: number | null;
@@ -17,6 +18,8 @@ interface HistorySidebarProps {
   handleHistoryDrop: (e: React.DragEvent, targetIndex: number) => void;
   deleteHistoryItem: (id: string, e: React.MouseEvent) => void;
   updateHistory: (newHistory: AnalysisHistoryItem[]) => void;
+  catalogs: CatalogMetadata[];
+  updateMultipleItemsCatalogue: (ids: string[], catalogueId: string | null) => void;
 }
 
 export default function HistorySidebar({
@@ -24,6 +27,7 @@ export default function HistorySidebar({
   selectedHistoryId,
   setSelectedHistoryId,
   selectedItemIds,
+  setSelectedItemIds,
   toggleItemSelection,
   isGroupedByLot,
   draggedIndex,
@@ -34,7 +38,42 @@ export default function HistorySidebar({
   handleHistoryDrop,
   deleteHistoryItem,
   updateHistory,
+  catalogs,
+  updateMultipleItemsCatalogue,
 }: HistorySidebarProps) {
+  const [bulkCatalogId, setBulkCatalogId] = React.useState<string>("");
+
+  const allVisibleSelected = React.useMemo(() => {
+    return catalogHistory.length > 0 && catalogHistory.every(item => selectedItemIds.includes(item.id));
+  }, [catalogHistory, selectedItemIds]);
+
+  const handleSelectAllVisible = () => {
+    if (allVisibleSelected) {
+      const visibleIds = catalogHistory.map(item => item.id);
+      setSelectedItemIds(selectedItemIds.filter(id => !visibleIds.includes(id)));
+    } else {
+      const visibleIds = catalogHistory.map(item => item.id);
+      const union = Array.from(new Set([...selectedItemIds, ...visibleIds]));
+      setSelectedItemIds(union);
+    }
+  };
+
+  const handleClearSelection = () => {
+    setSelectedItemIds([]);
+  };
+
+  const handleApplyBulkCatalog = () => {
+    if (!bulkCatalogId) {
+      alert("Please choose a catalogue to allocate the selected items to.");
+      return;
+    }
+    const val = bulkCatalogId === "none" ? null : bulkCatalogId;
+    updateMultipleItemsCatalogue(selectedItemIds, val);
+    alert(`Successfully allocated ${selectedItemIds.length} items to the selected catalogue.`);
+    setSelectedItemIds([]);
+    setBulkCatalogId("");
+  };
+
   return (
     <div
       className="lg:col-span-1 space-y-4 max-h-[700px] overflow-y-auto pr-1 scrollbar-thin scrollbar-thumb-stone-200"
@@ -63,6 +102,69 @@ export default function HistorySidebar({
         }
       }}
     >
+      {/* Selection & Bulk Actions Panel */}
+      <div className="bg-rosebery-card border border-rosebery-border rounded-sm p-3.5 space-y-3 shadow-gallery-soft mb-4">
+        <div className="flex items-center justify-between border-b border-rosebery-border/60 pb-2">
+          <span className="text-[10px] font-mono text-rosebery-primary font-bold uppercase tracking-wider block">
+            Selection & Bulk Actions
+          </span>
+          {selectedItemIds.length > 0 && (
+            <span className="text-[9px] font-mono text-rosebery-primary font-bold uppercase bg-rosebery-primary/10 border border-rosebery-primary/20 px-2 py-0.5 rounded-sm">
+              {selectedItemIds.length} Selected
+            </span>
+          )}
+        </div>
+        
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={handleSelectAllVisible}
+            className="flex-1 py-1.5 px-2 bg-rosebery-cream-bg hover:bg-stone-200/60 border border-rosebery-border hover:border-rosebery-primary text-rosebery-primary rounded-xs text-[9px] uppercase font-mono font-bold tracking-wider transition-all duration-200 cursor-pointer text-center"
+          >
+            {allVisibleSelected ? "Deselect All" : `Select All (${catalogHistory.length})`}
+          </button>
+          {selectedItemIds.length > 0 && (
+            <button
+              type="button"
+              onClick={handleClearSelection}
+              className="py-1.5 px-3 bg-red-50 hover:bg-red-100/80 border border-red-200 text-red-800 rounded-xs text-[9px] uppercase font-mono font-bold tracking-wider transition-all duration-200 cursor-pointer text-center"
+            >
+              Clear
+            </button>
+          )}
+        </div>
+
+        {selectedItemIds.length > 0 && (
+          <div className="space-y-2 pt-2.5 border-t border-rosebery-border/60">
+            <label className="text-[9px] font-mono text-stone-500 uppercase block font-semibold">
+              Allocate Selection to:
+            </label>
+            <div className="flex gap-2">
+              <select
+                value={bulkCatalogId}
+                onChange={(e) => setBulkCatalogId(e.target.value)}
+                className="flex-1 bg-white border border-rosebery-border rounded-xs px-2.5 py-1 text-xs text-rosebery-charcoal outline-none focus:border-rosebery-primary font-serif cursor-pointer"
+              >
+                <option value="">-- Choose Catalogue --</option>
+                <option value="none">None / Uncatalogued</option>
+                {catalogs.map((cat) => (
+                  <option key={cat.id} value={cat.id}>
+                    {cat.name}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={handleApplyBulkCatalog}
+                className="py-1 px-3 bg-rosebery-primary hover:bg-rosebery-primary-hover text-white rounded-xs text-[9px] uppercase font-mono font-bold tracking-wider transition-all duration-200 cursor-pointer font-bold"
+              >
+                Apply
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
       {!isGroupedByLot ? (
         /* Flat list representation */
         <div className="space-y-3">

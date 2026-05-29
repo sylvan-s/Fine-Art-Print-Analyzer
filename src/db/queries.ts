@@ -352,15 +352,17 @@ export async function saveUserItems(userId: string, items: AnalysisHistoryItem[]
       const checkAppQuery = `SELECT id FROM appraisals WHERE item_id = $1;`;
       const appRes = await client.query(checkAppQuery, [itemId]);
       
+      const modelName = item.report.modelUsed || 'gemini-2.5-flash';
       let appraisalId: string;
       if (appRes.rows.length === 0) {
         const insertAppQuery = `
           INSERT INTO appraisals (item_id, model_name, result, status, completed_at)
-          VALUES ($1, 'gemini-2.5-flash', $2, 'complete', NOW())
+          VALUES ($1, $2, $3, 'complete', NOW())
           RETURNING id;
         `;
         const insertAppRes = await client.query(insertAppQuery, [
           itemId,
+          modelName,
           JSON.stringify(item.report)
         ]);
         appraisalId = insertAppRes.rows[0].id;
@@ -368,10 +370,10 @@ export async function saveUserItems(userId: string, items: AnalysisHistoryItem[]
         appraisalId = appRes.rows[0].id;
         const updateAppQuery = `
           UPDATE appraisals
-          SET result = $1, status = 'complete', completed_at = NOW()
-          WHERE item_id = $2;
+          SET model_name = $1, result = $2, status = 'complete', completed_at = NOW()
+          WHERE item_id = $3;
         `;
-        await client.query(updateAppQuery, [JSON.stringify(item.report), itemId]);
+        await client.query(updateAppQuery, [modelName, JSON.stringify(item.report), itemId]);
       }
 
       // E. Save/Verify Supplementary Crops in images table
@@ -523,22 +525,24 @@ export async function saveCatalogueItems(userId: string, catalogueId: string, it
       const checkAppQuery = `SELECT id FROM appraisals WHERE item_id = $1;`;
       const appRes = await client.query(checkAppQuery, [itemId]);
       
+      const modelName = item.report.modelUsed || 'gemini-2.5-flash';
       if (appRes.rows.length === 0) {
         const insertAppQuery = `
           INSERT INTO appraisals (item_id, model_name, result, status, completed_at)
-          VALUES ($1, 'gemini-2.5-flash', $2, 'complete', NOW());
+          VALUES ($1, $2, $3, 'complete', NOW());
         `;
         await client.query(insertAppQuery, [
           itemId,
+          modelName,
           JSON.stringify(item.report)
         ]);
       } else {
         const updateAppQuery = `
           UPDATE appraisals
-          SET result = $1, status = 'complete', completed_at = NOW()
-          WHERE item_id = $2;
+          SET model_name = $1, result = $2, status = 'complete', completed_at = NOW()
+          WHERE item_id = $3;
         `;
-        await client.query(updateAppQuery, [JSON.stringify(item.report), itemId]);
+        await client.query(updateAppQuery, [modelName, JSON.stringify(item.report), itemId]);
       }
 
       // E. Save/Verify Supplementary Crops
