@@ -5,6 +5,8 @@ import { GoogleGenAI, Type, HarmCategory, HarmBlockThreshold } from "@google/gen
 import dotenv from "dotenv";
 import fs from "fs";
 import crypto from "crypto";
+import { initDatabase, pool } from "./src/db/pool";
+import * as db from "./src/db/queries";
 
 dotenv.config();
 
@@ -728,30 +730,21 @@ Coordinates MUST be normalized to a 0 to 1000 scale, formatted as [ymin, xmin, y
 // Expose static middleware for user uploaded images/scans
 app.use("/api/user-images", express.static(USER_RECORDS_DIR));
 
-// Helper to load registered users
-function loadUsers(): any[] {
-  try {
-    if (fs.existsSync(USERS_FILE)) {
-      const data = fs.readFileSync(USERS_FILE, "utf-8");
-      return JSON.parse(data || "[]");
-    }
-  } catch (err) {
-    console.error("Failed to read users file:", err);
+// Helper to resolve user from headers
+async function resolveUser(usernameHeader: any) {
+  if (!usernameHeader || typeof usernameHeader !== "string") {
+    throw new Error("Unauthorized. Missing user header.");
   }
-  return [];
-}
-
-// Helper to save registered users
-function saveUsers(users: any[]) {
-  try {
-    fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2));
-  } catch (err) {
-    console.error("Failed to write users file:", err);
+  const cleanUsername = usernameHeader.trim().toLowerCase();
+  const user = await db.findUserByEmail(cleanUsername);
+  if (!user) {
+    throw new Error("User profile not found.");
   }
+  return user;
 }
 
 // Signup route
-app.post("/api/auth/signup", (req, res) => {
+app.post("/api/auth/signup", async (req, res) => {
   try {
     const { username, password } = req.body;
     if (!username || !password) {
@@ -763,41 +756,21 @@ app.post("/api/auth/signup", (req, res) => {
       return res.status(400).json({ error: "Username or email can only contain alphanumeric characters, underscores, dashes, dots, plus signs, and at signs, and cannot contain consecutive dots." });
     }
 
-    const users = loadUsers();
-    if (users.some((u: any) => u.username === cleanUsername)) {
+    const existingUser = await db.findUserByEmail(cleanUsername);
+    if (existingUser) {
       return res.status(400).json({ error: "Username already exists." });
     }
 
-    users.push({ username: cleanUsername, password });
-    saveUsers(users);
+    const user = await db.createUser(cleanUsername, password);
 
-    // Create user directories
+    // Create user directories on local disk as fallback for uploaded assets
     const userFolder = path.join(USER_RECORDS_DIR, cleanUsername);
     const userImagesFolder = path.join(userFolder, "images");
-    const userCatalogsFolder = path.join(userFolder, "catalogs");
     if (!fs.existsSync(userFolder)) fs.mkdirSync(userFolder, { recursive: true });
     if (!fs.existsSync(userImagesFolder)) fs.mkdirSync(userImagesFolder, { recursive: true });
-    if (!fs.existsSync(userCatalogsFolder)) fs.mkdirSync(userCatalogsFolder, { recursive: true });
 
-    // Initialize list file
-    const catalogsListFile = path.join(userFolder, "catalogs_list.json");
-    if (!fs.existsSync(catalogsListFile)) {
-      const initialMetadata = {
-        catalogs: [
-          {
-            id: "default",
-            name: "Default Catalogue",
-            timestamp: new Date().toISOString()
-          }
-        ],
-        activeCatalogId: "default"
-      };
-      fs.writeFileSync(catalogsListFile, JSON.stringify(initialMetadata, null, 2));
-    }
-
-
-
-
+    // Create initial default catalogue in database
+    await db.createCatalogue(user.id, "Default Catalogue");
 
     return res.json({ success: true, username: cleanUsername });
   } catch (err: any) {
@@ -807,7 +780,7 @@ app.post("/api/auth/signup", (req, res) => {
 });
 
 // Login route
-app.post("/api/auth/login", (req, res) => {
+app.post("/api/auth/login", async (req, res) => {
   try {
     const { username, password } = req.body;
     if (!username || !password) {
@@ -815,12 +788,13 @@ app.post("/api/auth/login", (req, res) => {
     }
 
     const cleanUsername = username.trim().toLowerCase();
-    const users = loadUsers();
-    const user = users.find((u: any) => u.username === cleanUsername && u.password === password);
+    const user = await db.findUserByEmail(cleanUsername);
 
-    if (!user) {
+    if (!user || user.passwordHash !== password) {
       return res.status(401).json({ error: "Invalid username or password." });
     }
+
+    await db.updateLastLogin(user.id);
 
     return res.json({ success: true, username: cleanUsername });
   } catch (err: any) {
@@ -830,339 +804,177 @@ app.post("/api/auth/login", (req, res) => {
 });
 
 // Change password route
-app.post("/api/auth/change-password", (req, res) => {
+app.post("/api/auth/change-password", async (req, res) => {
   try {
     const username = req.headers["x-user-header"];
     const { currentPassword, newPassword } = req.body;
 
-    if (!username || typeof username !== "string") {
-      return res.status(401).json({ error: "Unauthorized. Missing user header." });
-    }
     if (!currentPassword || !newPassword) {
       return res.status(400).json({ error: "Current password and new password are required." });
     }
 
-    const cleanUsername = username.trim().toLowerCase();
-    const users = loadUsers();
-    const userIndex = users.findIndex((u: any) => u.username === cleanUsername);
+    const user = await resolveUser(username);
 
-    if (userIndex === -1 || users[userIndex].password !== currentPassword) {
+    if (user.passwordHash !== currentPassword) {
       return res.status(400).json({ error: "Incorrect current password." });
     }
 
-    users[userIndex].password = newPassword;
-    saveUsers(users);
+    await db.updateUserPassword(user.id, newPassword);
 
     return res.json({ success: true });
   } catch (err: any) {
     console.error("Change password failed:", err);
-    return res.status(500).json({ error: err.message || "Failed to change password." });
+    return res.status(err.message.includes("Unauthorized") || err.message.includes("not found") ? 401 : 500).json({ error: err.message || "Failed to change password." });
   }
 });
 
 // Delete user data / account route
-app.post("/api/user/delete-data", (req, res) => {
+app.post("/api/user/delete-data", async (req, res) => {
   try {
     const username = req.headers["x-user-header"];
     const { deleteType } = req.body;
 
-    if (!username || typeof username !== "string") {
-      return res.status(401).json({ error: "Unauthorized. Missing user header." });
-    }
     if (deleteType !== "data-only" && deleteType !== "account") {
       return res.status(400).json({ error: "Invalid deletion type. Must be 'data-only' or 'account'." });
     }
 
-    const cleanUsername = username.trim().toLowerCase();
+    const user = await resolveUser(username);
+    await db.deleteUserData(user.id, deleteType);
+
+    // Also wipe local directory assets
+    const cleanUsername = user.email.trim().toLowerCase();
     const userFolder = path.join(USER_RECORDS_DIR, cleanUsername);
-
-    if (deleteType === "data-only") {
-      const catalogsFolder = path.join(userFolder, "catalogs");
-      const imagesFolder = path.join(userFolder, "images");
-
-      // Wipe catalog contents
-      if (fs.existsSync(catalogsFolder)) {
-        fs.rmSync(catalogsFolder, { recursive: true, force: true });
-      }
-      // Wipe uploaded images
-      if (fs.existsSync(imagesFolder)) {
-        fs.rmSync(imagesFolder, { recursive: true, force: true });
-      }
-
-
-      // Re-create blank directories
-      fs.mkdirSync(catalogsFolder, { recursive: true });
-      fs.mkdirSync(imagesFolder, { recursive: true });
-
-      // Re-initialize catalogs_list.json metadata
-      const catalogsListFile = path.join(userFolder, "catalogs_list.json");
-      const initialMetadata = {
-        catalogs: [
-          {
-            id: "default",
-            name: "Default Catalogue",
-            timestamp: new Date().toISOString()
-          }
-        ],
-        activeCatalogId: "default"
-      };
-      fs.writeFileSync(catalogsListFile, JSON.stringify(initialMetadata, null, 2));
-
-
-
-
-
-      return res.json({ success: true, message: "All appraisal data cleared successfully." });
-    } else {
-      // Complete Account deletion
-      if (fs.existsSync(userFolder)) {
-        fs.rmSync(userFolder, { recursive: true, force: true });
-      }
-
-      const users = loadUsers();
-      const updatedUsers = users.filter((u: any) => u.username !== cleanUsername);
-      saveUsers(updatedUsers);
-
-      return res.json({ success: true, message: "User account and data deleted successfully." });
+    if (fs.existsSync(userFolder)) {
+      fs.rmSync(userFolder, { recursive: true, force: true });
     }
+
+    return res.json({ success: true, message: deleteType === "data-only" ? "All appraisal data cleared successfully." : "User account and data deleted successfully." });
   } catch (err: any) {
     console.error("Delete data failed:", err);
-    return res.status(500).json({ error: err.message || "Failed to delete data." });
+    return res.status(err.message.includes("Unauthorized") || err.message.includes("not found") ? 401 : 500).json({ error: err.message || "Failed to delete data." });
   }
 });
 
 // GET catalogs metadata list route
-app.get("/api/user/catalog-list", (req, res) => {
+app.get("/api/user/catalog-list", async (req, res) => {
   try {
     const username = req.headers["x-user-header"];
-    if (!username || typeof username !== "string") {
-      return res.status(401).json({ error: "Unauthorized. Missing user header." });
+    const user = await resolveUser(username);
+
+    let catalogs = await db.getUserCataloguesList(user.id);
+    if (catalogs.length === 0) {
+      const defaultCat = await db.createCatalogue(user.id, "Default Catalogue");
+      catalogs = [defaultCat];
     }
 
-    const cleanUsername = username.trim().toLowerCase();
-    const userFolder = path.join(USER_RECORDS_DIR, cleanUsername);
-    const catalogsFolder = path.join(userFolder, "catalogs");
-    const catalogsListFile = path.join(userFolder, "catalogs_list.json");
-
-    if (!fs.existsSync(userFolder)) {
-      fs.mkdirSync(userFolder, { recursive: true });
-    }
-    if (!fs.existsSync(catalogsFolder)) {
-      fs.mkdirSync(catalogsFolder, { recursive: true });
-    }
-
-    let metadata: any = { catalogs: [], activeCatalogId: "default" };
-    let changed = false;
-
-    if (fs.existsSync(catalogsListFile)) {
-      try {
-        const rawData = fs.readFileSync(catalogsListFile, "utf-8");
-        metadata = JSON.parse(rawData || "{}");
-      } catch (e) {
-        console.error("Failed to parse catalogs_list.json, resetting:", e);
-      }
-    } else {
-      metadata.catalogs = [
-        {
-          id: "default",
-          name: "Default Catalogue",
-          timestamp: new Date().toISOString()
-        }
-      ];
-      changed = true;
-    }
-
-    if (!Array.isArray(metadata.catalogs)) {
-      metadata.catalogs = [];
-      changed = true;
-    }
-
-    // Scan catalogs/ folder to find all *.json catalog files and auto-register them
-    const files = fs.readdirSync(catalogsFolder);
-    for (const file of files) {
-      if (file.endsWith(".json")) {
-        const catalogId = path.basename(file, ".json");
-        const exists = metadata.catalogs.some((c: any) => c.id === catalogId);
-        if (!exists) {
-          const filePath = path.join(catalogsFolder, file);
-          const stats = fs.statSync(filePath);
-          metadata.catalogs.push({
-            id: catalogId,
-            name: `Catalogue ${catalogId}`,
-            timestamp: stats.mtime.toISOString()
-          });
-          changed = true;
-        }
-      }
-    }
-
-    // Write back updated list
-    if (changed) {
-      fs.writeFileSync(catalogsListFile, JSON.stringify(metadata, null, 2));
-    }
-
-    return res.json(metadata);
+    return res.json({ catalogs, activeCatalogId: catalogs[0].id });
   } catch (err: any) {
     console.error("Failed to load catalog list:", err);
-    return res.status(500).json({ error: err.message || "Failed to load catalog list." });
+    return res.status(err.message.includes("Unauthorized") || err.message.includes("not found") ? 401 : 500).json({ error: err.message || "Failed to load catalog list." });
   }
 });
 
 // POST catalogs metadata list route
-app.post("/api/user/catalog-list", (req, res) => {
+app.post("/api/user/catalog-list", async (req, res) => {
   try {
     const username = req.headers["x-user-header"];
     const { catalogs, activeCatalogId } = req.body;
-
-    if (!username || typeof username !== "string") {
-      return res.status(401).json({ error: "Unauthorized. Missing user header." });
-    }
 
     if (!catalogs || !Array.isArray(catalogs)) {
       return res.status(400).json({ error: "Invalid catalogs list." });
     }
 
-    const cleanUsername = username.trim().toLowerCase();
-    const userFolder = path.join(USER_RECORDS_DIR, cleanUsername);
-    if (!fs.existsSync(userFolder)) {
-      fs.mkdirSync(userFolder, { recursive: true });
-    }
+    const user = await resolveUser(username);
 
-    const catalogsListFile = path.join(userFolder, "catalogs_list.json");
-    fs.writeFileSync(catalogsListFile, JSON.stringify({ catalogs, activeCatalogId }, null, 2));
+    // Sync catalogues list: insert or update name
+    const dbCatalogs = await db.getUserCataloguesList(user.id);
 
-    return res.json({ success: true });
-  } catch (err: any) {
-    console.error("Failed to save catalog list:", err);
-    return res.status(500).json({ error: err.message || "Failed to save catalog list." });
-  }
-});
-
-// GET catalog items route (by id parameter)
-app.get("/api/user/catalog", (req, res) => {
-  try {
-    const username = req.headers["x-user-header"];
-    const { id } = req.query;
-
-    if (!username || typeof username !== "string") {
-      return res.status(401).json({ error: "Unauthorized. Missing user header." });
-    }
-
-    const cleanUsername = username.trim().toLowerCase();
-    
-    if (!id || typeof id !== "string") {
-      return res.status(400).json({ error: "Missing catalogue ID parameter." });
-    }
-
-    const catalogFile = path.join(USER_RECORDS_DIR, cleanUsername, "catalogs", `${id}.json`);
-
-    if (!fs.existsSync(catalogFile)) {
-      return res.json([]);
-    }
-
-    const data = fs.readFileSync(catalogFile, "utf-8");
-    const catalog = JSON.parse(data || "[]");
-    return res.json(catalog);
-  } catch (err: any) {
-    console.error("Failed to load user catalog:", err);
-    return res.status(500).json({ error: err.message || "Failed to load catalog." });
-  }
-});
-
-// POST catalog items route (by id parameter)
-app.post("/api/user/catalog", (req, res) => {
-  try {
-    const username = req.headers["x-user-header"];
-    const { catalog } = req.body;
-    const { id } = req.query;
-
-    if (!username || typeof username !== "string") {
-      return res.status(401).json({ error: "Unauthorized. Missing user header." });
-    }
-
-    if (!catalog || !Array.isArray(catalog)) {
-      return res.status(400).json({ error: "Catalog must be a valid array." });
-    }
-
-    const cleanUsername = username.trim().toLowerCase();
-    const userFolder = path.join(USER_RECORDS_DIR, cleanUsername);
-    
-    if (!id || typeof id !== "string") {
-      return res.status(400).json({ error: "Missing catalogue ID parameter." });
-    }
-
-    const catalogsFolder = path.join(userFolder, "catalogs");
-    if (!fs.existsSync(catalogsFolder)) {
-      fs.mkdirSync(catalogsFolder, { recursive: true });
-    }
-    const catalogFile = path.join(catalogsFolder, `${id}.json`);
-
-    fs.writeFileSync(catalogFile, JSON.stringify(catalog, null, 2));
-    return res.json({ success: true });
-  } catch (err: any) {
-    console.error("Failed to save user catalog:", err);
-    return res.status(500).json({ error: err.message || "Failed to save catalog." });
-  }
-});
-
-// POST delete specific catalog route
-app.post("/api/user/delete-catalog", (req, res) => {
-  try {
-    const username = req.headers["x-user-header"];
-    const { id } = req.body;
-
-    if (!username || typeof username !== "string") {
-      return res.status(401).json({ error: "Unauthorized. Missing user header." });
-    }
-
-    if (!id || typeof id !== "string") {
-      return res.status(400).json({ error: "Missing or invalid catalog id." });
-    }
-
-    const cleanUsername = username.trim().toLowerCase();
-    const userFolder = path.join(USER_RECORDS_DIR, cleanUsername);
-    const catalogFile = path.join(userFolder, "catalogs", `${id}.json`);
-
-    if (fs.existsSync(catalogFile)) {
-      fs.unlinkSync(catalogFile);
-    }
-
-    // Update catalogs_list.json
-    const catalogsListFile = path.join(userFolder, "catalogs_list.json");
-    if (fs.existsSync(catalogsListFile)) {
-      try {
-        const rawData = fs.readFileSync(catalogsListFile, "utf-8");
-        const metadata = JSON.parse(rawData || "{}");
-        if (Array.isArray(metadata.catalogs)) {
-          metadata.catalogs = metadata.catalogs.filter((c: any) => c.id !== id);
+    for (const clientCat of catalogs) {
+      const existing = dbCatalogs.find((c) => c.id === clientCat.id);
+      if (existing) {
+        if (existing.name !== clientCat.name) {
+          await db.renameCatalogue(clientCat.id, clientCat.name);
         }
-
-        // If the active catalogue was deleted, select another one or reset to "default"
-        if (metadata.activeCatalogId === id) {
-          if (metadata.catalogs && metadata.catalogs.length > 0) {
-            metadata.activeCatalogId = metadata.catalogs[0].id;
-          } else {
-            // Reinitialize default
-            metadata.catalogs = [
-              {
-                id: "default",
-                name: "Default Catalogue",
-                timestamp: new Date().toISOString()
-              }
-            ];
-            metadata.activeCatalogId = "default";
-          }
+      } else {
+        const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+        if (uuidRegex.test(clientCat.id)) {
+          const query = `
+            INSERT INTO catalogues (id, user_id, name, created_at)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name;
+          `;
+          await pool.query(query, [clientCat.id, user.id, clientCat.name, clientCat.timestamp || new Date()]);
+        } else {
+          await db.createCatalogue(user.id, clientCat.name);
         }
-        fs.writeFileSync(catalogsListFile, JSON.stringify(metadata, null, 2));
-      } catch (e) {
-        console.error("Failed to update catalogs_list.json during deletion:", e);
       }
     }
 
     return res.json({ success: true });
   } catch (err: any) {
+    console.error("Failed to save catalog list:", err);
+    return res.status(err.message.includes("Unauthorized") || err.message.includes("not found") ? 401 : 500).json({ error: err.message || "Failed to save catalog list." });
+  }
+});
+
+// GET catalog items route (by id parameter)
+app.get("/api/user/catalog", async (req, res) => {
+  try {
+    const username = req.headers["x-user-header"];
+    const { id } = req.query;
+
+    if (!id || typeof id !== "string") {
+      return res.status(400).json({ error: "Missing catalogue ID parameter." });
+    }
+
+    const user = await resolveUser(username);
+    const catalog = await db.getCatalogueItems(id);
+    return res.json(catalog);
+  } catch (err: any) {
+    console.error("Failed to load user catalog:", err);
+    return res.status(err.message.includes("Unauthorized") || err.message.includes("not found") ? 401 : 500).json({ error: err.message || "Failed to load catalog." });
+  }
+});
+
+// POST catalog items route (by id parameter)
+app.post("/api/user/catalog", async (req, res) => {
+  try {
+    const username = req.headers["x-user-header"];
+    const { catalog } = req.body;
+    const { id } = req.query;
+
+    if (!catalog || !Array.isArray(catalog)) {
+      return res.status(400).json({ error: "Catalog must be a valid array." });
+    }
+    if (!id || typeof id !== "string") {
+      return res.status(400).json({ error: "Missing catalogue ID parameter." });
+    }
+
+    const user = await resolveUser(username);
+    await db.saveCatalogueItems(user.id, id, catalog);
+    return res.json({ success: true });
+  } catch (err: any) {
+    console.error("Failed to save user catalog:", err);
+    return res.status(err.message.includes("Unauthorized") || err.message.includes("not found") ? 401 : 500).json({ error: err.message || "Failed to save catalog." });
+  }
+});
+
+// POST delete specific catalog route
+app.post("/api/user/delete-catalog", async (req, res) => {
+  try {
+    const username = req.headers["x-user-header"];
+    const { id } = req.body;
+
+    if (!id || typeof id !== "string") {
+      return res.status(400).json({ error: "Missing or invalid catalog id." });
+    }
+
+    const user = await resolveUser(username);
+    await db.deleteCatalogue(id);
+    return res.json({ success: true });
+  } catch (err: any) {
     console.error("Failed to delete catalog file:", err);
-    return res.status(500).json({ error: err.message || "Failed to delete catalog." });
+    return res.status(err.message.includes("Unauthorized") || err.message.includes("not found") ? 401 : 500).json({ error: err.message || "Failed to delete catalog." });
   }
 });
 
@@ -1220,6 +1032,8 @@ app.post("/api/user/upload-scan", (req, res) => {
 // ----------------------------------------
 
 async function setupServer() {
+  await initDatabase();
+
   if (process.env.NODE_ENV !== "production") {
     // Integrate Vite as a middleware for development
     const vite = await createViteServer({
