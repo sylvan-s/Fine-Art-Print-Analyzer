@@ -13,6 +13,7 @@ interface CatalogListViewProps {
   setSelectedItemIds: (ids: string[]) => void;
   toggleItemSelection: (id: string) => void;
   updateItemLot: (id: string, lotNumber: string, lotTitle: string) => void;
+  updateItemCatalogue: (id: string, catalogueId: string | null) => void;
   deleteHistoryItem: (id: string, e: React.MouseEvent) => void;
   emailAddress: string;
   setEmailAddress: (val: string) => void;
@@ -80,6 +81,7 @@ export default function CatalogListView({
   setSelectedItemIds,
   toggleItemSelection,
   updateItemLot,
+  updateItemCatalogue,
   deleteHistoryItem,
   emailAddress,
   setEmailAddress,
@@ -123,6 +125,7 @@ export default function CatalogListView({
   const [newCatalogNameInput, setNewCatalogNameInput] = React.useState("");
   const [isCreatingCatalog, setIsCreatingCatalog] = React.useState(false);
   const [isDeletingCatalog, setIsDeletingCatalog] = React.useState(false);
+  const [selectedCatalogueFilter, setSelectedCatalogueFilter] = React.useState<string>("all");
 
   const handleCreateEmptyCatalog = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -175,14 +178,48 @@ export default function CatalogListView({
       setIsSavingRename(false);
     }
   };
+  const [filterFilename, setFilterFilename] = React.useState("");
+  const [filterDate, setFilterDate] = React.useState("");
+
+  const filteredHistory = React.useMemo(() => {
+    return catalogHistory.filter((item) => {
+      // Catalogue Filter
+      if (selectedCatalogueFilter === "uncatalogued") {
+        if (item.catalogue_id) return false;
+      } else if (selectedCatalogueFilter !== "all") {
+        if (item.catalogue_id !== selectedCatalogueFilter) return false;
+      }
+
+      // Filename filter (case-insensitive substring match)
+      if (filterFilename.trim() !== "") {
+        const query = filterFilename.toLowerCase();
+        const filename = (item.imageFileName || "").toLowerCase();
+        if (!filename.includes(query)) return false;
+      }
+      
+      // Date filter
+      if (filterDate !== "") {
+        const filterD = new Date(filterDate);
+        const itemD = new Date(item.timestamp);
+        const match = 
+          filterD.getFullYear() === itemD.getFullYear() &&
+          filterD.getMonth() === itemD.getMonth() &&
+          filterD.getDate() === itemD.getDate();
+        if (!match) return false;
+      }
+      
+      return true;
+    });
+  }, [catalogHistory, selectedCatalogueFilter, filterFilename, filterDate]);
+
   const activeItem =
-    catalogHistory.find((item) => item.id === (selectedHistoryId || catalogHistory[0]?.id)) ||
-    catalogHistory[0];
+    filteredHistory.find((item) => item.id === (selectedHistoryId || filteredHistory[0]?.id)) ||
+    filteredHistory[0];
 
   const totalEstimates = React.useMemo(() => {
     let totalLow = 0;
     let totalHigh = 0;
-    catalogHistory.forEach((item) => {
+    filteredHistory.forEach((item) => {
       const originalCurrency = item.report.auctionEstimate.currency || "USD";
       const low = item.report.auctionEstimate.lowEstimate || 0;
       const high = item.report.auctionEstimate.highEstimate || 0;
@@ -193,12 +230,12 @@ export default function CatalogListView({
       low: totalLow,
       high: totalHigh
     };
-  }, [catalogHistory, currency]);
+  }, [filteredHistory, currency]);
 
   const downloadCsvManifest = () => {
     const itemsToExport = selectedItemIds.length > 0
-      ? catalogHistory.filter(item => selectedItemIds.includes(item.id))
-      : catalogHistory;
+      ? filteredHistory.filter(item => selectedItemIds.includes(item.id))
+      : filteredHistory;
 
     if (itemsToExport.length === 0) {
       alert("No items found to export.");
@@ -294,7 +331,7 @@ export default function CatalogListView({
               Catalogue Manager
             </h3>
             <p className="text-xs text-rosebery-muted mt-0.5">
-              Switch active catalogues, rename titles, and configure identifiers.
+              allocate appraised images to catalogs
             </p>
           </div>
 
@@ -393,27 +430,93 @@ export default function CatalogListView({
         </div>
       </div>
 
-      {/* Archive overview banner */}
-      <div className="bg-rosebery-card border border-rosebery-border rounded-sm p-5 md:p-6 flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-gallery-soft">
-        <div>
-          <h2 className="text-xl font-serif text-rosebery-charcoal tracking-wide font-semibold">Appraisals recorded in this session</h2>
-          <p className="text-xs text-rosebery-muted mt-1">
-            Browse, group into lots, sort records, and export registered appraisals.
-          </p>
-        </div>
-        <div className="flex flex-col items-start md:items-end gap-1.5 shrink-0">
-          <div className="text-xs font-mono text-rosebery-primary uppercase tracking-wider bg-stone-50 px-3.5 py-1.5 border border-rosebery-border rounded-sm font-semibold">
-            {catalogHistory.length === 0 ? "Empty Cabinet" : `${catalogHistory.length} Registered Appraisals`}
+      {/* Archive overview banner / Image Database Section */}
+      <div className="bg-rosebery-card border border-rosebery-border rounded-sm p-5 md:p-6 shadow-gallery-soft space-y-5">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-rosebery-border pb-4">
+          <div>
+            <h2 className="text-xl font-serif text-rosebery-charcoal tracking-wide font-semibold">image database</h2>
+            <p className="text-xs text-rosebery-muted mt-1">
+              Please select one or more images from the database below to group them into custom lots, export CSVs, or run actions.
+            </p>
           </div>
-          {catalogHistory.length > 0 && (
-            <span className="text-[10px] font-mono text-stone-500 uppercase tracking-wider">
-              Est. Total Value: <strong className="text-rosebery-charcoal">{getCurrencySymbol(currency)}{totalEstimates.low.toLocaleString()} - {getCurrencySymbol(currency)}{totalEstimates.high.toLocaleString()}</strong>
-            </span>
-          )}
+          <div className="flex flex-col items-start md:items-end gap-1.5 shrink-0">
+            <div className="text-xs font-mono text-rosebery-primary uppercase tracking-wider bg-stone-50 px-3.5 py-1.5 border border-rosebery-border rounded-sm font-semibold">
+              {filteredHistory.length === catalogHistory.length 
+                ? (catalogHistory.length === 0 ? "Empty Database" : `${catalogHistory.length} Total Masterpieces`)
+                : `${filteredHistory.length} of ${catalogHistory.length} Filtered`}
+            </div>
+            {filteredHistory.length > 0 && (
+              <span className="text-[10px] font-mono text-stone-500 uppercase tracking-wider">
+                Est. Total Value: <strong className="text-rosebery-charcoal">{getCurrencySymbol(currency)}{totalEstimates.low.toLocaleString()} - {getCurrencySymbol(currency)}{totalEstimates.high.toLocaleString()}</strong>
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* Filters Row */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-1">
+          {/* 1. Catalogue ID Filter */}
+          <div className="space-y-1">
+            <label className="text-[10px] font-mono text-rosebery-primary font-bold uppercase tracking-wider block">
+              Filter by Catalogue
+            </label>
+            <select
+              value={selectedCatalogueFilter}
+              onChange={(e) => setSelectedCatalogueFilter(e.target.value)}
+              className="w-full bg-white border border-rosebery-border rounded-xs px-3 py-2 text-xs text-rosebery-charcoal outline-none focus:border-rosebery-primary font-serif cursor-pointer"
+            >
+              <option value="all">Show All Items</option>
+              <option value="uncatalogued">Uncatalogued Items</option>
+              {catalogs.map((cat) => (
+                <option key={cat.id} value={cat.id}>
+                  {cat.name}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* 2. Filename Text Search Filter */}
+          <div className="space-y-1">
+            <label className="text-[10px] font-mono text-rosebery-primary font-bold uppercase tracking-wider block">
+              Search Filename
+            </label>
+            <input
+              type="text"
+              placeholder="Type filename substring..."
+              value={filterFilename}
+              onChange={(e) => setFilterFilename(e.target.value)}
+              className="w-full bg-white border border-rosebery-border rounded-xs px-3 py-2 text-xs text-rosebery-charcoal outline-none focus:border-rosebery-primary placeholder:text-stone-400 font-sans"
+            />
+          </div>
+
+          {/* 3. Upload Date Filter */}
+          <div className="space-y-1">
+            <label className="text-[10px] font-mono text-rosebery-primary font-bold uppercase tracking-wider block">
+              Filter by Upload Date
+            </label>
+            <div className="flex gap-1.5 items-center">
+              <input
+                type="date"
+                value={filterDate}
+                onChange={(e) => setFilterDate(e.target.value)}
+                className="w-full bg-white border border-rosebery-border rounded-xs px-3 py-2 text-xs text-rosebery-charcoal outline-none focus:border-rosebery-primary font-mono cursor-pointer"
+              />
+              {filterDate && (
+                <button
+                  type="button"
+                  onClick={() => setFilterDate("")}
+                  className="px-2 py-2 text-xs text-rosebery-muted hover:text-rosebery-primary font-mono font-bold bg-stone-100 hover:bg-stone-200/60 rounded-xs border border-rosebery-border cursor-pointer transition-colors"
+                  title="Clear date filter"
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+          </div>
         </div>
       </div>
 
-      {catalogHistory.length > 0 && (
+      {filteredHistory.length > 0 && (
         <div className="bg-rosebery-card border border-rosebery-border rounded-sm p-4 flex flex-col gap-4 shadow-gallery-soft animate-fadeIn">
           {/* Export CSV & Email dispatch bar */}
           <div className="flex flex-wrap items-center gap-3.5 border-b border-rosebery-border/50 pb-4">
@@ -574,6 +677,14 @@ export default function CatalogListView({
             <p className="text-xs">Your appraised masterpiece print coordinates will preserve here.</p>
           </div>
         </div>
+      ) : filteredHistory.length === 0 ? (
+        <div className="bg-rosebery-card border border-rosebery-border rounded-sm p-12 text-center text-rosebery-muted max-w-sm mx-auto space-y-4 shadow-gallery-soft animate-fadeIn">
+          <FileText className="w-10 h-10 mx-auto opacity-40 text-rosebery-primary" />
+          <div className="space-y-1">
+            <p className="text-sm font-semibold text-rosebery-charcoal font-serif">No matching images found</p>
+            <p className="text-xs">Try adjusting your search filters above.</p>
+          </div>
+        </div>
       ) : catalogViewMode === "tabular" ? (
         <div className="space-y-4 animate-fadeIn">
 
@@ -628,9 +739,9 @@ export default function CatalogListView({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[#E8E2D7]">
-                  {catalogHistory.map((item) => {
+                  {filteredHistory.map((item) => {
                     const isSelectedHistoryId =
-                      selectedHistoryId === item.id || (!selectedHistoryId && catalogHistory[0].id === item.id);
+                      selectedHistoryId === item.id || (!selectedHistoryId && filteredHistory[0].id === item.id);
                     const isCheckedForLot = selectedItemIds.includes(item.id);
 
                     const originalCurrency = item.report.auctionEstimate.currency || "USD";
@@ -865,6 +976,26 @@ export default function CatalogListView({
                       className="w-full bg-white border border-rosebery-border rounded-sm text-xs px-2.5 py-1 text-rosebery-charcoal outline-none focus:ring-1 focus:ring-rosebery-primary/30 focus:border-rosebery-primary"
                     />
                   </div>
+                  <div className="space-y-1">
+                    <label className="text-[9px] font-mono text-stone-500 uppercase block font-semibold">
+                      Catalogue:
+                    </label>
+                    <select
+                      value={activeItem.catalogue_id || ""}
+                      onChange={(e) => {
+                        const val = e.target.value === "" ? null : e.target.value;
+                        updateItemCatalogue(activeItem.id, val);
+                      }}
+                      className="w-full bg-white border border-rosebery-border rounded-sm text-xs px-2.5 py-1 text-rosebery-charcoal outline-none focus:ring-1 focus:ring-rosebery-primary/30 focus:border-rosebery-primary font-serif cursor-pointer"
+                    >
+                      <option value="">None / Uncatalogued</option>
+                      {catalogs.map((cat) => (
+                        <option key={cat.id} value={cat.id}>
+                          {cat.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
               </div>
             </div>
@@ -874,7 +1005,7 @@ export default function CatalogListView({
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
           {/* Catalog items sidebar with either Flat or grouped list */}
           <HistorySidebar
-            catalogHistory={catalogHistory}
+            catalogHistory={filteredHistory}
             selectedHistoryId={selectedHistoryId}
             setSelectedHistoryId={setSelectedHistoryId}
             selectedItemIds={selectedItemIds}
@@ -906,7 +1037,7 @@ export default function CatalogListView({
                 </span>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div className="space-y-1.5">
                   <label className="text-[10px] font-mono text-rosebery-primary font-semibold uppercase tracking-wider block">
                     Lot ID/Number (e.g. "Lot 101")
@@ -931,6 +1062,27 @@ export default function CatalogListView({
                     onChange={(e) => updateItemLot(activeItem.id, activeItem.lotNumber || "", e.target.value)}
                     className="w-full bg-rosebery-cream-bg border border-rosebery-border focus:border-rosebery-primary focus:bg-rosebery-card rounded-sm px-3.5 py-2 text-xs text-rosebery-charcoal outline-hidden placeholder:text-stone-400 font-mono transition-colors"
                   />
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-mono text-rosebery-primary font-semibold uppercase tracking-wider block">
+                    Catalogue Allocation
+                  </label>
+                  <select
+                    value={activeItem.catalogue_id || ""}
+                    onChange={(e) => {
+                      const val = e.target.value === "" ? null : e.target.value;
+                      updateItemCatalogue(activeItem.id, val);
+                    }}
+                    className="w-full bg-rosebery-cream-bg border border-rosebery-border focus:border-rosebery-primary focus:bg-rosebery-card rounded-sm px-3.5 py-2 text-xs text-rosebery-charcoal outline-hidden font-serif cursor-pointer transition-colors"
+                  >
+                    <option value="">None / Uncatalogued</option>
+                    {catalogs.map((cat) => (
+                      <option key={cat.id} value={cat.id}>
+                        {cat.name}
+                      </option>
+                    ))}
+                  </select>
                 </div>
               </div>
             </div>

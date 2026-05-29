@@ -47,22 +47,27 @@ async function runTests() {
   // Set user header for subsequent requests
   userHeader = testUser;
 
-  // Test 2: Retrieve initial catalogue list (auto-generated list should contain 'default')
+  // Test 2: Retrieve initial catalogue list (auto-generated list should contain 'email-AuctionID')
   console.log('\nTest 2: Retrieving initial catalogue list');
   const getListRes = await apiFetch('/api/user/catalog-list');
   assert.strictEqual(getListRes.status, 200);
   assert.ok(Array.isArray(getListRes.json.catalogs), 'Catalogs should be an array');
-  assert.strictEqual(getListRes.json.activeCatalogId, 'default');
-  assert.strictEqual(getListRes.json.catalogs[0].id, 'default');
+  
+  const defaultId = getListRes.json.activeCatalogId;
+  const expectedPrefix = `${testUser}-`;
+  assert.ok(defaultId.startsWith(expectedPrefix), `ID ${defaultId} should start with ${expectedPrefix}`);
+  assert.ok(/^\d{4}$/.test(defaultId.substring(expectedPrefix.length)), `ID ${defaultId} should end with a 4-digit number`);
+  
+  assert.strictEqual(getListRes.json.catalogs[0].id, defaultId);
   assert.strictEqual(getListRes.json.catalogs[0].name, 'Default Catalogue');
   console.log('✓ Retrieved initial catalogue list successfully');
 
   // Test 3: Create a new catalogue with a 5-digit numeric ID
   console.log('\nTest 3: Creating a new catalogue');
-  const customCatalogId = '54321';
+  const customCatalogId = `${testUser}-5432`;
   const customCatalogName = 'Watercolors 2026';
   const newCatalogsList = [
-    { id: 'default', name: 'Default Catalogue', timestamp: new Date().toISOString() },
+    { id: defaultId, name: 'Default Catalogue', timestamp: new Date().toISOString() },
     { id: customCatalogId, name: customCatalogName, timestamp: new Date().toISOString() }
   ];
 
@@ -80,7 +85,7 @@ async function runTests() {
   console.log('\nTest 4: Saving catalog items to new catalogue');
   const mockItems = [
     {
-      id: 'mock-artwork-uuid-1',
+      id: '11111111-2222-3333-4444-555555555555',
       timestamp: new Date().toLocaleDateString(),
       imageFileName: 'watercolor1.jpg',
       imageSize: '4.2 MB',
@@ -119,8 +124,9 @@ async function runTests() {
   const getCatalogItemsRes = await apiFetch(`/api/user/catalog?id=${customCatalogId}`);
   assert.strictEqual(getCatalogItemsRes.status, 200);
   assert.ok(Array.isArray(getCatalogItemsRes.json), 'Catalog response should be an array');
+  console.log("Returned catalog items:", getCatalogItemsRes.json);
   assert.strictEqual(getCatalogItemsRes.json.length, 1);
-  assert.strictEqual(getCatalogItemsRes.json[0].id, 'mock-artwork-uuid-1');
+  assert.strictEqual(getCatalogItemsRes.json[0].id, '11111111-2222-3333-4444-555555555555');
   assert.strictEqual(getCatalogItemsRes.json[0].report.artworkTitle, 'Seascape Sunset');
   assert.strictEqual(getCatalogItemsRes.json[0].report.likelyArtist, 'William Turner');
   console.log('✓ Catalogue items verified successfully');
@@ -129,7 +135,7 @@ async function runTests() {
   console.log('\nTest 6: Renaming catalogue name');
   const renamedName = 'William Turner Watercolors';
   const renamedCatalogsList = [
-    { id: 'default', name: 'Default Catalogue', timestamp: new Date().toISOString() },
+    { id: defaultId, name: 'Default Catalogue', timestamp: new Date().toISOString() },
     { id: customCatalogId, name: renamedName, timestamp: new Date().toISOString() }
   ];
   const renameListRes = await apiFetch('/api/user/catalog-list', {
@@ -143,7 +149,9 @@ async function runTests() {
 
   // Retrieve list and verify name
   const verifyListRes = await apiFetch('/api/user/catalog-list');
-  assert.strictEqual(verifyListRes.json.catalogs[1].name, renamedName);
+  const updatedCatalog = verifyListRes.json.catalogs.find(c => c.id === customCatalogId);
+  assert.ok(updatedCatalog, 'Custom catalogue should exist');
+  assert.strictEqual(updatedCatalog.name, renamedName);
   console.log('✓ Catalogue successfully renamed');
 
   // Test 7: Delete custom catalogue and verify catalogs_list.json cleanup
@@ -157,7 +165,7 @@ async function runTests() {
   // Verify catalogue list cleanup
   const postDeleteListRes = await apiFetch('/api/user/catalog-list');
   assert.strictEqual(postDeleteListRes.json.catalogs.length, 1);
-  assert.strictEqual(postDeleteListRes.json.activeCatalogId, 'default');
+  assert.strictEqual(postDeleteListRes.json.activeCatalogId, defaultId);
   assert.ok(!postDeleteListRes.json.catalogs.some(c => c.id === customCatalogId));
 
   // Verify item file deleted on disk

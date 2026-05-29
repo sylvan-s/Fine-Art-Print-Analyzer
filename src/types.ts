@@ -73,6 +73,8 @@ export interface AnalysisHistoryItem {
   signatureImageUrl?: string;
   damageImageUrl?: string;
   scaleImageUrl?: string;
+  catalogue_id?: string | null;
+  lot_id?: string | null;
 }
 
 export interface CatalogMetadata {

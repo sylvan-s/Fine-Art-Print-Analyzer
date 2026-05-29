@@ -8,18 +8,53 @@ import {
 import { PrintAnalysisReport, AnalysisHistoryItem, CatalogMetadata } from "../types";
 
 interface BatchProcessorProps {
-  catalogHistory: AnalysisHistoryItem[];
+  itemDatabase: AnalysisHistoryItem[];
   updateHistory: (newHistory: AnalysisHistoryItem[]) => Promise<AnalysisHistoryItem[]>;
   currency: "USD" | "GBP" | "EUR";
-  catalogs: CatalogMetadata[];
-  activeCatalogId: string;
-  onSwitchCatalog: (id: string) => Promise<void>;
-  targetOption: "current" | "new";
-  setTargetOption: (option: "current" | "new") => void;
-  newCatalogName: string;
-  setNewCatalogName: (name: string) => void;
-  createNewCatalog: (name: string) => Promise<string>;
+  appraisalMethod: string;
+  setAppraisalMethod: (val: string) => void;
+  appraisalMethods: any[];
 }
+
+const resizeImageIfNeeded = async (
+  base64Data: string,
+  quality: "original" | "medium" | "low"
+): Promise<string> => {
+  if (quality === "original") return base64Data;
+  const maxDim = quality === "low" ? 512 : 1024;
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      let w = img.width;
+      let h = img.height;
+      if (w <= maxDim && h <= maxDim) {
+        resolve(base64Data);
+        return;
+      }
+      if (w > h) {
+        h = Math.round((h * maxDim) / w);
+        w = maxDim;
+      } else {
+        w = Math.round((w * maxDim) / h);
+        h = maxDim;
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext("2d");
+      if (ctx) {
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = "high";
+        ctx.drawImage(img, 0, 0, w, h);
+        resolve(canvas.toDataURL("image/jpeg", 0.8));
+      } else {
+        resolve(base64Data);
+      }
+    };
+    img.onerror = () => resolve(base64Data);
+    img.src = base64Data;
+  });
+};
 
 interface BatchFile {
   id: string;
@@ -63,21 +98,16 @@ interface ProcessedArtwork {
 }
 
 export default function BatchProcessor({ 
-  catalogHistory, 
+  itemDatabase, 
   updateHistory, 
   currency,
-  catalogs,
-  activeCatalogId,
-  onSwitchCatalog,
-  targetOption,
-  setTargetOption,
-  newCatalogName,
-  setNewCatalogName,
-  createNewCatalog
+  appraisalMethod,
+  setAppraisalMethod,
+  appraisalMethods,
 }: BatchProcessorProps) {
-  // Keep latest catalogHistory in a ref to avoid stale closures in long-running async loops
-  const catalogHistoryRef = useRef(catalogHistory);
-  catalogHistoryRef.current = catalogHistory;
+  // Keep latest itemDatabase in a ref to avoid stale closures in long-running async loops
+  const itemDatabaseRef = useRef(itemDatabase);
+  itemDatabaseRef.current = itemDatabase;
 
   // Input sources
   const [batchFiles, setBatchFiles] = useState<BatchFile[]>([]);
@@ -197,31 +227,10 @@ export default function BatchProcessor({
   const startProcessing = async () => {
     if (batchFiles.length === 0) return;
 
-    if (targetOption === "new") {
-      if (!newCatalogName.trim()) {
-        addLog("❌ Error: Please provide a Catalogue Name.");
-        return;
-      }
-    }
-
     setIsProcessing(true);
     addLog("Batch processing queue initialized.");
 
-    let targetHistory = [...catalogHistoryRef.current];
-
-    if (targetOption === "new") {
-      try {
-        const cleanId = await createNewCatalog(newCatalogName);
-        targetHistory = [];
-        setTargetOption("current");
-        setNewCatalogName("");
-        addLog(`Created new catalogue: "${newCatalogName}" (${cleanId})`);
-      } catch (catErr: any) {
-        addLog(`❌ Failed to create new catalogue: ${catErr.message}`);
-        setIsProcessing(false);
-        return;
-      }
-    }
+    let targetHistory = [...itemDatabaseRef.current];
 
     // Loop sequentially
     for (let i = 0; i < batchFiles.length; i++) {
@@ -325,13 +334,18 @@ export default function BatchProcessor({
           updateArtStatusForFile(file.id, j, "appraising");
 
           try {
+            const selectedMethodConfig = appraisalMethods.find(m => m.id === appraisalMethod);
+            const targetQuality = selectedMethodConfig?.imageQuality || "original";
+            const processedBase64 = await resizeImageIfNeeded(art.imagePreview, targetQuality);
+
             const analyzeRes = await fetch("/api/analyze-print", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
-                imageBase64: art.imagePreview,
+                imageBase64: processedBase64,
                 mimeType: "image/jpeg",
-                currency
+                currency,
+                method: appraisalMethod
               }),
             });
 
@@ -521,14 +535,19 @@ export default function BatchProcessor({
               addLog(`Retrying appraisal of print [${j + 1}/${artworksToProcess.length}]: "${art.label}"...`);
               updateArtStatusForFile(updatedFile.id, j, "appraising");
 
+              const selectedMethodConfig = appraisalMethods.find(m => m.id === appraisalMethod);
+              const targetQuality = selectedMethodConfig?.imageQuality || "original";
+              const processedBase64 = await resizeImageIfNeeded(art.imagePreview, targetQuality);
+
               try {
                 const analyzeRes = await fetch("/api/analyze-print", {
                   method: "POST",
                   headers: { "Content-Type": "application/json" },
                   body: JSON.stringify({
-                    imageBase64: art.imagePreview,
+                    imageBase64: processedBase64,
                     mimeType: "image/jpeg",
-                    currency
+                    currency,
+                    method: appraisalMethod
                   }),
                 });
 
@@ -640,85 +659,44 @@ export default function BatchProcessor({
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
         {/* Left Console: Inputs & Queue */}
         <div className="lg:col-span-7 space-y-6">
-          {/* Destination Catalogue selector */}
-          <div className="bg-white border border-rosebery-border rounded-xl p-6 shadow-gallery-soft space-y-4">
-            <div className="border-b border-rosebery-border pb-2">
-              <span className="text-[10px] font-mono uppercase tracking-[0.2em] text-rosebery-primary block font-bold">
-                DESTINATION CATALOGUE
-              </span>
-            </div>
-
-            <div className="space-y-4">
-              <div className="flex flex-col sm:flex-row sm:items-center gap-6">
-                <label className="flex items-center gap-2 text-xs text-rosebery-charcoal cursor-pointer">
-                  <input
-                    type="radio"
-                    name="batchTargetOption"
-                    value="current"
-                    checked={targetOption === "current"}
-                    onChange={() => setTargetOption("current")}
-                    disabled={isProcessing}
-                    className="accent-rosebery-primary"
-                  />
-                  <span className="flex items-center gap-1.5">
-                    Add to catalogue:
-                    <select
-                      value={activeCatalogId}
-                      onChange={(e) => {
-                        setTargetOption("current");
-                        onSwitchCatalog(e.target.value);
-                      }}
-                      onClick={(e) => e.stopPropagation()}
-                      disabled={isProcessing}
-                      className="bg-white border border-rosebery-border rounded-xs px-2 py-1 text-xs text-rosebery-charcoal outline-none focus:border-rosebery-primary font-serif cursor-pointer ml-1"
-                    >
-                      {catalogs.map((cat) => (
-                        <option key={cat.id} value={cat.id}>
-                          {cat.name} ({cat.id})
-                        </option>
-                      ))}
-                    </select>
-                  </span>
-                </label>
-
-                <label className="flex items-center gap-2 text-xs text-rosebery-charcoal cursor-pointer">
-                  <input
-                    type="radio"
-                    name="batchTargetOption"
-                    value="new"
-                    checked={targetOption === "new"}
-                    onChange={() => setTargetOption("new")}
-                    disabled={isProcessing}
-                    className="accent-rosebery-primary"
-                  />
-                  <span>Create new catalogue</span>
-                </label>
-              </div>
-
-              {targetOption === "new" && (
-                <div className="space-y-1.5 pt-1 animate-fadeIn">
-                  <label className="text-[9px] font-mono text-rosebery-primary font-bold uppercase tracking-wider block">
-                    Catalogue Name
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    placeholder="E.g. Picasso Prints, Lithos 2026..."
-                    value={newCatalogName}
-                    disabled={isProcessing}
-                    onChange={(e) => setNewCatalogName(e.target.value)}
-                    className="w-full bg-white border border-rosebery-border focus:border-rosebery-primary rounded-sm px-3 py-2 text-xs text-rosebery-charcoal outline-hidden placeholder:text-stone-400"
-                  />
-                </div>
-              )}
-            </div>
-          </div>
-
           <div className="bg-white border border-rosebery-border rounded-xl p-6 shadow-gallery-soft space-y-6">
             <h3 className="text-base font-serif font-semibold text-rosebery-charcoal flex items-center gap-2 border-b border-rosebery-border pb-3">
               <FolderOpen className="w-5 h-5 text-rosebery-primary" />
               Batch Folder Sources
             </h3>
+
+            {/* Appraisal Method Selection */}
+            <div className="space-y-2 bg-stone-50 border border-rosebery-border p-4 rounded-lg">
+              <label className="text-[10px] font-mono uppercase tracking-wider text-rosebery-primary font-bold block flex items-center justify-between">
+                <span>Appraisal Method / LLM Model</span>
+                <span className="text-[9px] text-rosebery-gold font-mono font-semibold tracking-wider uppercase">Config</span>
+              </label>
+              <select
+                value={appraisalMethod}
+                onChange={(e) => setAppraisalMethod(e.target.value)}
+                className="w-full bg-white border border-rosebery-border focus:border-rosebery-primary focus:ring-1 focus:ring-rosebery-primary/20 rounded-sm p-2.5 text-xs text-rosebery-charcoal outline-hidden font-mono transition-all duration-200 cursor-pointer"
+                disabled={isProcessing}
+              >
+                {appraisalMethods.map((method) => (
+                  <option key={method.id} value={method.id}>
+                    {method.name} ({method.modelName})
+                  </option>
+                ))}
+              </select>
+              {(() => {
+                const selectedMethod = appraisalMethods.find(m => m.id === appraisalMethod);
+                if (!selectedMethod) return null;
+                return (
+                  <div className="text-[10px] font-mono text-rosebery-muted leading-relaxed border-t border-rosebery-border/40 pt-2 space-y-1">
+                    <p className="text-rosebery-charcoal font-semibold">{selectedMethod.description}</p>
+                    <p className="text-[9px] flex gap-3 mt-1">
+                      <span>Image Quality: <strong className="text-rosebery-primary uppercase">{selectedMethod.imageQuality}</strong></span>
+                      <span>Aux Scans: <strong className="text-rosebery-primary uppercase">{selectedMethod.includeAuxiliaryScans ? "Yes" : "No"}</strong></span>
+                    </p>
+                  </div>
+                );
+              })()}
+            </div>
 
             {/* Source Options Grid */}
             {/* Folder Directory Selector */}

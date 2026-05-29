@@ -1,12 +1,11 @@
 -- ============================================================
---  IMAGE CATALOGUE APP — DATABASE SCHEMA
+--  IMAGE CATALOGUE APP — DATABASE SCHEMA (ITEM-FIRST EDITION)
 -- ============================================================
 --  Conventions:
 --    - All primary keys are UUID (gen_random_uuid())
 --    - Timestamps are TIMESTAMPTZ (UTC)
 --    - Soft deletes via deleted_at (NULL = active)
 --    - ENUM-like values use TEXT with CHECK constraints
---      so they're easy to extend without migrations
 -- ============================================================
 
 
@@ -25,11 +24,10 @@ CREATE TABLE users (
 
 -- ------------------------------------------------------------
 -- CATALOGUES
--- Defined before lots so lots can optionally ref them,
--- though the relationship is via catalogue_lots.
+-- Catalogues are logical groups to partition items.
 -- ------------------------------------------------------------
 CREATE TABLE catalogues (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id              TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
     user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     name            TEXT NOT NULL,
     description     TEXT,
@@ -41,7 +39,7 @@ CREATE TABLE catalogues (
 
 -- ------------------------------------------------------------
 -- LOTS
--- A lot is a grouping of one or more user-uploaded images.
+-- A lot is an auction grouping of one or more items.
 -- ------------------------------------------------------------
 CREATE TABLE lots (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -56,47 +54,48 @@ CREATE TABLE lots (
 
 
 -- ------------------------------------------------------------
+-- ITEMS
+-- Core entity representing a unique print supporting appraisals,
+-- catalogues, and lots classifications.
+-- ------------------------------------------------------------
+CREATE TABLE items (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    lot_id          UUID REFERENCES lots(id) ON DELETE SET NULL,
+    catalogue_id    TEXT REFERENCES catalogues(id) ON DELETE SET NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    deleted_at      TIMESTAMPTZ             -- soft delete
+);
+
+
+-- ------------------------------------------------------------
 -- IMAGES
--- User-uploaded images only.
--- lot_id is nullable — images may exist unassigned
--- before being grouped into a lot.
+-- Main print scans and auxiliary closeup highlights.
 -- ------------------------------------------------------------
 CREATE TABLE images (
     id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id             UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    lot_id              UUID REFERENCES lots(id) ON DELETE SET NULL,
-    storage_key         TEXT NOT NULL,      -- path in object storage (R2 / GCS)
+    item_id             UUID NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+    storage_key         TEXT NOT NULL,      -- path in local storage / cloud bucket
+    image_type          TEXT NOT NULL DEFAULT 'primary'
+                            CHECK (image_type IN ('primary', 'supplementary')),
+    description         TEXT,               -- 'primary', 'signature', 'damage', 'scale', etc.
     original_filename   TEXT,
     content_type        TEXT,
     file_size_bytes     INT,
-    position            INT,               -- display order within the lot
+    position            INT,                -- display order
     uploaded_at         TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 
 -- ------------------------------------------------------------
--- CATALOGUE_LOTS  (junction)
--- Enables many-to-many: a lot can appear in multiple catalogues.
--- ------------------------------------------------------------
-CREATE TABLE catalogue_lots (
-    catalogue_id    UUID NOT NULL REFERENCES catalogues(id) ON DELETE CASCADE,
-    lot_id          UUID NOT NULL REFERENCES lots(id) ON DELETE CASCADE,
-    position        INT,                   -- display order within the catalogue
-    added_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (catalogue_id, lot_id)
-);
-
-
--- ------------------------------------------------------------
 -- APPRAISALS
--- Each appraisal is run against a single image.
--- Multiple appraisals per image are supported (reruns,
--- different models). Each run is an independent row.
+-- Valuation runs conducted on a specific item.
 -- ------------------------------------------------------------
 CREATE TABLE appraisals (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    image_id        UUID NOT NULL REFERENCES images(id) ON DELETE CASCADE,
-    model_name      TEXT NOT NULL,          -- e.g. 'claude-sonnet-4-6'
+    item_id         UUID NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+    model_name      TEXT NOT NULL,          -- e.g. 'gemini-2.5-flash'
     result          JSONB,                  -- full structured LLM response
     status          TEXT NOT NULL DEFAULT 'pending'
                         CHECK (status IN ('pending', 'processing', 'complete', 'failed')),
@@ -107,58 +106,39 @@ CREATE TABLE appraisals (
 );
 
 
--- ------------------------------------------------------------
--- APPRAISAL_IMAGES
--- Images generated by the LLM during the appraisal process.
--- These are for analysis only and are deliberately isolated —
--- no lot_id, no path to user uploads.
--- expires_at supports scheduled cleanup jobs.
--- ------------------------------------------------------------
-CREATE TABLE appraisal_images (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    appraisal_id    UUID NOT NULL REFERENCES appraisals(id) ON DELETE CASCADE,
-    storage_key     TEXT NOT NULL,          -- path in object storage
-    description     TEXT,                  -- what the LLM generated this for
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    expires_at      TIMESTAMPTZ            -- NULL = keep indefinitely
-);
-
-
 -- ============================================================
 --  INDEXES
 -- ============================================================
 
--- User lookups (login)
+-- User lookups
 CREATE UNIQUE INDEX idx_users_email         ON users (email);
 
--- Ownership lookups
-CREATE INDEX idx_images_user_id             ON images (user_id);
-CREATE INDEX idx_images_lot_id              ON images (lot_id);
-CREATE INDEX idx_lots_user_id               ON lots (user_id);
-CREATE INDEX idx_catalogues_user_id         ON catalogues (user_id);
+-- Item mappings
+CREATE INDEX idx_items_user_id              ON items (user_id);
+CREATE INDEX idx_items_lot_id               ON items (lot_id);
+CREATE INDEX idx_items_catalogue_id         ON items (catalogue_id);
+CREATE INDEX idx_items_active               ON items (user_id) WHERE deleted_at IS NULL;
 
--- Soft-delete filters (partial index — only indexes active rows)
-CREATE INDEX idx_lots_active                ON lots (user_id) WHERE deleted_at IS NULL;
-CREATE INDEX idx_catalogues_active          ON catalogues (user_id) WHERE deleted_at IS NULL;
+-- Images mapping
+CREATE INDEX idx_images_item_id             ON images (item_id);
+CREATE INDEX idx_images_type                ON images (item_id, image_type);
 
--- Appraisal lookups by image
-CREATE INDEX idx_appraisals_image_id        ON appraisals (image_id);
-
--- Appraisal status queue (worker polling)
+-- Appraisals
+CREATE INDEX idx_appraisals_item_id         ON appraisals (item_id);
 CREATE INDEX idx_appraisals_status          ON appraisals (status) WHERE status IN ('pending', 'processing');
 
--- LLM image cleanup (scheduled expiry jobs)
-CREATE INDEX idx_appraisal_images_expires   ON appraisal_images (expires_at) WHERE expires_at IS NOT NULL;
-
--- Junction table lookups
-CREATE INDEX idx_catalogue_lots_lot_id      ON catalogue_lots (lot_id);
+-- Group lookups
+CREATE INDEX idx_lots_user_id               ON lots (user_id);
+CREATE INDEX idx_lots_active                ON lots (user_id) WHERE deleted_at IS NULL;
+CREATE INDEX idx_catalogues_user_id         ON catalogues (user_id);
+CREATE INDEX idx_catalogues_active          ON catalogues (user_id) WHERE deleted_at IS NULL;
 
 
 -- ============================================================
 --  USEFUL VIEWS
 -- ============================================================
 
--- All appraisals for a lot (via its images)
+-- All appraisals for a lot (via its items)
 CREATE VIEW lot_appraisals AS
 SELECT
     l.id            AS lot_id,
@@ -171,21 +151,21 @@ SELECT
     a.result,
     a.created_at    AS appraised_at
 FROM lots l
-JOIN images i       ON i.lot_id = l.id
-JOIN appraisals a   ON a.image_id = i.id;
+JOIN items it       ON it.lot_id = l.id
+JOIN images i       ON i.item_id = it.id AND i.image_type = 'primary'
+JOIN appraisals a   ON a.item_id = it.id;
 
 
--- Summary of a catalogue with lot and image counts
+-- Summary of a catalogue with lot and item counts
 CREATE VIEW catalogue_summary AS
 SELECT
     c.id            AS catalogue_id,
     c.name          AS catalogue_name,
     c.user_id,
-    COUNT(DISTINCT cl.lot_id)   AS lot_count,
-    COUNT(DISTINCT i.id)        AS image_count,
+    COUNT(DISTINCT it.lot_id)   AS lot_count,
+    COUNT(DISTINCT it.id)        AS item_count,
     c.created_at
 FROM catalogues c
-LEFT JOIN catalogue_lots cl     ON cl.catalogue_id = c.id
-LEFT JOIN images i              ON i.lot_id = cl.lot_id
+LEFT JOIN items it            ON it.catalogue_id = c.id AND it.deleted_at IS NULL
 WHERE c.deleted_at IS NULL
 GROUP BY c.id, c.name, c.user_id, c.created_at;

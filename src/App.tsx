@@ -30,7 +30,9 @@ import {
   setActiveCatalogIdDB, 
   getCatalogItemsDB, 
   setCatalogItemsDB, 
-  deleteCatalogItemsDB 
+  deleteCatalogItemsDB,
+  getItemDatabaseDB,
+  setItemDatabaseDB
 } from "./utils/db";
 
 // Helper: Generate a small compressed JPEG thumbnail image (max 300x300) for history items to prevent LocalStorage QuotaExceededError
@@ -89,16 +91,95 @@ const generateThumbnail = (fileOrBase64: File | string, maxWidth = 300, maxHeigh
   });
 };
 
-const generateUniqueCatalogId = (existingCatalogs: { id: string }[]): string => {
+const generateUniqueCatalogId = (existingCatalogs: { id: string }[], username: string | null): string => {
+  const userId = username ? username : "guest";
   let attempts = 0;
   while (attempts < 100) {
-    const id = Math.floor(10000 + Math.random() * 90000).toString();
+    const auctionId = Math.floor(1000 + Math.random() * 9000).toString();
+    const id = `${userId}-${auctionId}`;
     if (!existingCatalogs.some(c => c.id === id)) {
       return id;
     }
     attempts++;
   }
-  return Math.floor(10000 + Math.random() * 90000).toString(); // fallback
+  const auctionId = Math.floor(1000 + Math.random() * 9000).toString();
+  return `${userId}-${auctionId}`;
+};
+
+const resizeImageIfNeeded = async (
+  base64Data: string,
+  quality: "original" | "medium" | "low"
+): Promise<string> => {
+  if (quality === "original") return base64Data;
+  const maxDim = quality === "low" ? 512 : 1024;
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      let w = img.width;
+      let h = img.height;
+      if (w <= maxDim && h <= maxDim) {
+        resolve(base64Data);
+        return;
+      }
+      if (w > h) {
+        h = Math.round((h * maxDim) / w);
+        w = maxDim;
+      } else {
+        w = Math.round((w * maxDim) / h);
+        h = maxDim;
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext("2d");
+      if (ctx) {
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = "high";
+        ctx.drawImage(img, 0, 0, w, h);
+        resolve(canvas.toDataURL("image/jpeg", 0.8));
+      } else {
+        resolve(base64Data);
+      }
+    };
+    img.onerror = () => resolve(base64Data);
+    img.src = base64Data;
+  });
+};
+
+const cropImageCanvas = (
+  base64Data: string, 
+  box_2d: number[]
+): Promise<string> => {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const [ymin, xmin, ymax, xmax] = box_2d;
+      
+      const x = (xmin / 1000) * img.width;
+      const y = (ymin / 1000) * img.height;
+      const w = ((xmax - xmin) / 1000) * img.width;
+      const h = ((ymax - ymin) / 1000) * img.height;
+
+      const canvas = document.createElement("canvas");
+      const cropW = Math.max(1, w);
+      const cropH = Math.max(1, h);
+      
+      canvas.width = cropW;
+      canvas.height = cropH;
+
+      const ctx = canvas.getContext("2d");
+      if (ctx) {
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = "high";
+        ctx.drawImage(img, x, y, cropW, cropH, 0, 0, cropW, cropH);
+        resolve(canvas.toDataURL("image/jpeg", 0.85));
+      } else {
+        reject(new Error("Failed to get 2D canvas context."));
+      }
+    };
+    img.onerror = () => reject(new Error("Failed to load source image for crop."));
+    img.src = base64Data;
+  });
 };
 
 export default function App() {
@@ -119,6 +200,8 @@ export default function App() {
   const [scalePreview, setScalePreview] = useState<string | null>(null);
 
   const [currency, setCurrency] = useState<"USD" | "GBP" | "EUR">("USD");
+  const [appraisalMethods, setAppraisalMethods] = useState<any[]>([]);
+  const [appraisalMethod, setAppraisalMethod] = useState<string>("gemini-standard");
   const [userNotes, setUserNotes] = useState("");
   const [provenanceNotes, setProvenanceNotes] = useState("");
   const [conditionNotes, setConditionNotes] = useState("");
@@ -229,34 +312,51 @@ export default function App() {
             const listData = await listRes.json();
             setCatalogs(listData.catalogs || []);
             setActiveCatalogId(listData.activeCatalogId || "default");
-            
-            const activeId = listData.activeCatalogId || "default";
-            const res = await fetch(`/api/user/catalog?id=${activeId}`, {
-              headers: { "X-User-Header": username }
-            });
-            if (res.ok) {
-              const data = await res.json();
-              setCatalogHistory(data);
-              await setCatalogItemsDB(activeId, data);
-            }
-            setIsHistoryLoading(false);
-            return;
           }
+          
+          const res = await fetch("/api/user/items", {
+            headers: { "X-User-Header": username }
+          });
+          if (res.ok) {
+            const data = await res.json();
+            setCatalogHistory(data);
+            await setItemDatabaseDB(data);
+          }
+          setIsHistoryLoading(false);
+          return;
         }
         
         const localList = await getCatalogsListDB();
         setCatalogs(localList);
         const localActiveId = await getActiveCatalogIdDB();
         setActiveCatalogId(localActiveId);
-        const localItems = await getCatalogItemsDB(localActiveId);
+        const localItems = await getItemDatabaseDB();
         setCatalogHistory(localItems);
       } catch (err) {
-        console.error("Failed to load catalog history on mount:", err);
+        console.error("Failed to load items database on mount:", err);
       } finally {
         setIsHistoryLoading(false);
       }
     };
     loadHistory();
+  }, []);
+
+  // Fetch registered appraisal methods from backend on mount
+  useEffect(() => {
+    const fetchMethods = async () => {
+      try {
+        const res = await fetch("/api/appraisal-methods");
+        if (res.ok) {
+          const data = await res.json();
+          if (Array.isArray(data)) {
+            setAppraisalMethods(data);
+          }
+        }
+      } catch (err) {
+        console.error("Failed to fetch appraisal methods:", err);
+      }
+    };
+    fetchMethods();
   }, []);
 
   const uploadImagePayload = async (base64Data: string, username: string): Promise<string> => {
@@ -316,7 +416,7 @@ export default function App() {
     setCatalogs(updatedCatalogs);
     
     try {
-      await setCatalogItemsDB(activeCatalogId, newHistory);
+      await setItemDatabaseDB(newHistory);
       await setCatalogsListDB(updatedCatalogs);
     } catch (err: any) {
       console.error("Failed to persist print analysis library in IndexedDB:", err);
@@ -329,13 +429,13 @@ export default function App() {
         const syncedHistory = await uploadNewScansToServer(newHistory, currentUser);
         resultHistory = syncedHistory;
         
-        const res = await fetch(`/api/user/catalog?id=${activeCatalogId}`, {
+        const res = await fetch("/api/user/items", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
             "X-User-Header": currentUser
           },
-          body: JSON.stringify({ catalog: syncedHistory })
+          body: JSON.stringify({ items: syncedHistory })
         });
         
         await fetch("/api/user/catalog-list", {
@@ -349,17 +449,16 @@ export default function App() {
 
         if (res.ok) {
           setCatalogHistory(syncedHistory);
-          await setCatalogItemsDB(activeCatalogId, syncedHistory);
+          await setItemDatabaseDB(syncedHistory);
         }
       } catch (serverErr) {
-        console.error("Failed to sync catalog with server:", serverErr);
+        console.error("Failed to sync items with server:", serverErr);
       }
     }
     return resultHistory;
   };
 
   const handleSwitchCatalog = async (id: string) => {
-    setIsHistoryLoading(true);
     setActiveCatalogId(id);
     
     try {
@@ -378,34 +477,10 @@ export default function App() {
     } catch (err) {
       console.error("Failed to switch catalog ID in storage:", err);
     }
-
-    try {
-      const res = await fetch(`/api/user/catalog?id=${id}`, {
-        headers: { "X-User-Header": currentUser || "" }
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setCatalogHistory(data);
-        await setCatalogItemsDB(id, data);
-        setIsHistoryLoading(false);
-        return;
-      }
-    } catch (err) {
-      console.error("Failed to load catalog items from server, falling back to local DB:", err);
-    }
-
-    try {
-      const localItems = await getCatalogItemsDB(id);
-      setCatalogHistory(localItems);
-    } catch (err) {
-      console.error("Failed to load switched catalog items:", err);
-    } finally {
-      setIsHistoryLoading(false);
-    }
   };
 
   const createNewCatalog = async (name: string): Promise<string> => {
-    const finalId = generateUniqueCatalogId(catalogs);
+    const finalId = generateUniqueCatalogId(catalogs, currentUser);
     const finalName = name.trim() || `Catalogue ${new Date().toLocaleDateString()}`;
 
     const newCatalog: CatalogMetadata = {
@@ -417,7 +492,7 @@ export default function App() {
     const updatedCatalogs = [...catalogs, newCatalog];
     setCatalogs(updatedCatalogs);
     setActiveCatalogId(finalId);
-    setCatalogHistory([]);
+    // Note: Do not clear global catalogHistory to keep items visible for allocation
 
     await setCatalogsListDB(updatedCatalogs);
     await setActiveCatalogIdDB(finalId);
@@ -450,29 +525,15 @@ export default function App() {
   };
 
   const handleRenameCatalog = async (oldId: string, newId: string, newName: string) => {
-    const cleanNewId = newId.trim().toLowerCase().replace(/[^a-z0-9_-]/g, "-");
-    const finalNewId = cleanNewId || oldId;
+    // Keep ID immutable to preserve database relationships and prevent orphan entries
     const finalNewName = newName.trim() || "Untitled Catalogue";
 
-    if (finalNewId !== oldId && catalogs.some(c => c.id === finalNewId)) {
-      throw new Error(`A catalogue with ID "${finalNewId}" already exists.`);
-    }
-
     const updatedCatalogs = catalogs.map(c => 
-      c.id === oldId ? { ...c, id: finalNewId, name: finalNewName, timestamp: new Date().toISOString() } : c
+      c.id === oldId ? { ...c, name: finalNewName, timestamp: new Date().toISOString() } : c
     );
 
     try {
-      const items = await getCatalogItemsDB(oldId);
-      await setCatalogItemsDB(finalNewId, items);
-      if (finalNewId !== oldId) {
-        await deleteCatalogItemsDB(oldId);
-      }
       await setCatalogsListDB(updatedCatalogs);
-      if (activeCatalogId === oldId) {
-        setActiveCatalogId(finalNewId);
-        await setActiveCatalogIdDB(finalNewId);
-      }
       setCatalogs(updatedCatalogs);
     } catch (err) {
       console.error("Local catalog rename failed:", err);
@@ -481,37 +542,14 @@ export default function App() {
 
     if (currentUser) {
       try {
-        const items = await getCatalogItemsDB(finalNewId);
-        const syncedHistory = await uploadNewScansToServer(items, currentUser);
-        
-        await fetch(`/api/user/catalog?id=${finalNewId}`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-User-Header": currentUser
-          },
-          body: JSON.stringify({ catalog: syncedHistory })
-        });
-
         await fetch("/api/user/catalog-list", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
             "X-User-Header": currentUser
           },
-          body: JSON.stringify({ catalogs: updatedCatalogs, activeCatalogId: activeCatalogId === oldId ? finalNewId : activeCatalogId })
+          body: JSON.stringify({ catalogs: updatedCatalogs, activeCatalogId })
         });
-
-        if (finalNewId !== oldId) {
-          await fetch("/api/user/delete-catalog", {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "X-User-Header": currentUser
-            },
-            body: JSON.stringify({ id: oldId })
-          });
-        }
       } catch (err) {
         console.error("Server catalog rename sync failed:", err);
       }
@@ -536,16 +574,15 @@ export default function App() {
         }
       }
 
-      await deleteCatalogItemsDB(id);
-
       const updatedCatalogs = catalogs.filter((c) => c.id !== id);
+      const updatedHistory = catalogHistory.map(item => 
+        item.catalogue_id === id ? { ...item, catalogue_id: null } : item
+      );
       
+      let fallbackId = activeCatalogId;
       if (activeCatalogId === id) {
         if (updatedCatalogs.length > 0) {
-          const fallbackId = updatedCatalogs[0].id;
-          setCatalogs(updatedCatalogs);
-          await setCatalogsListDB(updatedCatalogs);
-          await handleSwitchCatalog(fallbackId);
+          fallbackId = updatedCatalogs[0].id;
         } else {
           // Re-create default catalog
           const defaultCatalog: CatalogMetadata = {
@@ -553,49 +590,17 @@ export default function App() {
             name: "Default Catalogue",
             timestamp: new Date().toISOString()
           };
-          const resetList = [defaultCatalog];
-          setCatalogs(resetList);
-          setActiveCatalogId("default");
-          setCatalogHistory([]);
-
-          await setCatalogsListDB(resetList);
-          await setActiveCatalogIdDB("default");
-          await setCatalogItemsDB("default", []);
-
-          if (currentUser) {
-            await fetch("/api/user/catalog-list", {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                "X-User-Header": currentUser
-              },
-              body: JSON.stringify({ catalogs: resetList, activeCatalogId: "default" })
-            });
-            await fetch("/api/user/catalog?id=default", {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                "X-User-Header": currentUser
-              },
-              body: JSON.stringify({ catalog: [] })
-            });
-          }
-        }
-      } else {
-        setCatalogs(updatedCatalogs);
-        await setCatalogsListDB(updatedCatalogs);
-        
-        if (currentUser) {
-          await fetch("/api/user/catalog-list", {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "X-User-Header": currentUser
-            },
-            body: JSON.stringify({ catalogs: updatedCatalogs, activeCatalogId })
-          });
+          updatedCatalogs.push(defaultCatalog);
+          fallbackId = "default";
         }
       }
+
+      setCatalogs(updatedCatalogs);
+      setActiveCatalogId(fallbackId);
+      await setCatalogsListDB(updatedCatalogs);
+      await setActiveCatalogIdDB(fallbackId);
+      await updateHistory(updatedHistory);
+
     } catch (err: any) {
       console.error("Failed to delete catalogue:", err);
       alert(err.message || "Failed to delete catalogue.");
@@ -675,13 +680,13 @@ export default function App() {
           setActiveCatalogId(listData.activeCatalogId || "default");
           
           const activeId = listData.activeCatalogId || "default";
-          const catalogRes = await fetch(`/api/user/catalog?id=${activeId}`, {
+          const itemsRes = await fetch("/api/user/items", {
             headers: { "X-User-Header": loggedInUser }
           });
-          if (catalogRes.ok) {
-            const catalogData = await catalogRes.json();
-            setCatalogHistory(catalogData);
-            await setCatalogItemsDB(activeId, catalogData);
+          if (itemsRes.ok) {
+            const itemsData = await itemsRes.json();
+            setCatalogHistory(itemsData);
+            await setItemDatabaseDB(itemsData);
             await setCatalogsListDB(listData.catalogs);
             await setActiveCatalogIdDB(activeId);
           }
@@ -861,26 +866,34 @@ export default function App() {
         });
       }, 900);
 
+      const selectedMethodConfig = appraisalMethods.find(m => m.id === appraisalMethod);
+      const targetQuality = selectedMethodConfig?.imageQuality || "original";
+      const includeAux = selectedMethodConfig ? selectedMethodConfig.includeAuxiliaryScans : true;
+
       const base64Data = await fileToBase64(selectedFile);
+      const processedBase64 = await resizeImageIfNeeded(base64Data, targetQuality);
 
       let signatureBase64 = undefined;
       let signatureMimeType = undefined;
-      if (signatureFile) {
-        signatureBase64 = await fileToBase64(signatureFile);
+      if (includeAux && signatureFile) {
+        const rawSigBase64 = await fileToBase64(signatureFile);
+        signatureBase64 = await resizeImageIfNeeded(rawSigBase64, targetQuality);
         signatureMimeType = signatureFile.type;
       }
 
       let damageBase64 = undefined;
       let damageMimeType = undefined;
-      if (damageFile) {
-        damageBase64 = await fileToBase64(damageFile);
+      if (includeAux && damageFile) {
+        const rawDmgBase64 = await fileToBase64(damageFile);
+        damageBase64 = await resizeImageIfNeeded(rawDmgBase64, targetQuality);
         damageMimeType = damageFile.type;
       }
 
       let scaleBase64 = undefined;
       let scaleMimeType = undefined;
-      if (scaleFile) {
-        scaleBase64 = await fileToBase64(scaleFile);
+      if (includeAux && scaleFile) {
+        const rawScaleBase64 = await fileToBase64(scaleFile);
+        scaleBase64 = await resizeImageIfNeeded(rawScaleBase64, targetQuality);
         scaleMimeType = scaleFile.type;
       }
 
@@ -899,133 +912,137 @@ export default function App() {
         compiledNotes += `[Literature & Catalogue References]: ${literatureNotes.trim()}\n`;
       }
 
-      // Call Express full-stack API Endpoint
-      const response = await fetch("/api/analyze-print", {
+      // Call collage detection
+      setLoadingStep("Checking for multi-artwork collage layout...");
+      const detectRes = await fetch("/api/detect-artworks", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          imageBase64: base64Data,
-          mimeType: selectedFile.type,
-          userNotes: compiledNotes.trim() || undefined,
-          signatureBase64,
-          signatureMimeType,
-          damageBase64,
-          damageMimeType,
-          scaleBase64,
-          scaleMimeType,
-          currency,
-        }),
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ imageBase64: base64Data, mimeType: selectedFile.type })
       });
+      if (!detectRes.ok) {
+        const errData = await detectRes.json().catch(() => ({}));
+        throw new Error(errData.error || "Collage detection failed.");
+      }
+      const detection = await detectRes.json();
+
+      const splitItems: AnalysisHistoryItem[] = [];
+      const randomCode = Math.random().toString(36).substring(2, 6).toUpperCase();
+      const cleanName = selectedFile.name.substring(0, 8).replace(/[^a-zA-Z0-9]/g, "");
+      const sharedLotNumber = `Lot S-${cleanName}-${randomCode}`;
+      const sharedLotTitle = `Split Group Lot: ${selectedFile.name}`;
+
+      if (detection.containsMultipleArtworks && detection.artworks.length > 1) {
+        setLoadingStep(`Collage scan detected! Splitting into ${detection.artworks.length} items...`);
+        for (let j = 0; j < detection.artworks.length; j++) {
+          const art = detection.artworks[j];
+          setLoadingStep(`Slicing cropped artwork: ${art.label}...`);
+          const croppedBase64 = await cropImageCanvas(base64Data, art.box_2d);
+          const processedCroppedBase64 = await resizeImageIfNeeded(croppedBase64, targetQuality);
+
+          setLoadingStep(`Appraising item [${j + 1}/${detection.artworks.length}]: ${art.label}...`);
+          const analyzeRes = await fetch("/api/analyze-print", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              imageBase64: processedCroppedBase64,
+              mimeType: "image/jpeg",
+              currency,
+              method: appraisalMethod
+            }),
+          });
+          if (!analyzeRes.ok) {
+            const errData = await analyzeRes.json().catch(() => ({}));
+            throw new Error(errData.error || `Appraisal of ${art.label} failed.`);
+          }
+          const report: PrintAnalysisReport = await analyzeRes.json();
+
+          const historyItem: AnalysisHistoryItem = {
+            id: crypto.randomUUID(),
+            timestamp: new Date().toLocaleDateString("en-US", {
+              month: "short",
+              day: "numeric",
+              year: "numeric",
+              hour: "2-digit",
+              minute: "2-digit",
+            }),
+            imageUrl: processedCroppedBase64,
+            imageFileName: `${selectedFile.name}_${art.label.replace(/\s+/g, "_")}.jpg`,
+            imageSize: "Split Scan Crop",
+            report,
+            lotNumber: sharedLotNumber,
+            lotTitle: sharedLotTitle
+          };
+          splitItems.push(historyItem);
+        }
+      } else {
+        // Single piece detected.
+        setLoadingStep("Appraising print sheet...");
+        const analyzeRes = await fetch("/api/analyze-print", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            imageBase64: processedBase64,
+            mimeType: selectedFile.type,
+            userNotes: compiledNotes.trim() || undefined,
+            signatureBase64,
+            signatureMimeType,
+            damageBase64,
+            damageMimeType,
+            scaleBase64,
+            scaleMimeType,
+            currency,
+            method: appraisalMethod
+          }),
+        });
+        if (!analyzeRes.ok) {
+          const errData = await analyzeRes.json().catch(() => ({}));
+          throw new Error(errData.error || "Detailed print appraisal analysis failed.");
+        }
+        const report: PrintAnalysisReport = await analyzeRes.json();
+
+        let thumbnailImg = previewUrl || "";
+        try {
+          thumbnailImg = await generateThumbnail(selectedFile, 300, 300);
+        } catch (thumbErr) {
+          console.warn("Could not generate thumbnail:", thumbErr);
+        }
+
+        const historyItem: AnalysisHistoryItem = {
+          id: crypto.randomUUID(),
+          timestamp: new Date().toLocaleDateString("en-US", {
+            month: "short",
+            day: "numeric",
+            year: "numeric",
+            hour: "2-digit",
+            minute: "2-digit",
+          }),
+          imageUrl: thumbnailImg || (base64Data.startsWith("data:") ? base64Data : `data:${selectedFile.type};base64,${base64Data}`),
+          imageFileName: selectedFile.name || "Uploaded_Print.png",
+          imageSize: formatBytes(selectedFile.size),
+          report,
+          signatureImageUrl: signaturePreview || undefined,
+          damageImageUrl: damagePreview || undefined,
+          scaleImageUrl: scalePreview || undefined,
+        };
+        splitItems.push(historyItem);
+      }
 
       clearInterval(interval);
       clearInterval(progressTextTimer);
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error || `Server responded with standard exit code: ${response.status}`);
+      const newHistory = [...splitItems, ...catalogHistory];
+      await updateHistory(newHistory);
+
+      if (splitItems.length > 0) {
+        setCurrentHistoryItemId(splitItems[0].id);
+        setAnalysisResult(splitItems[0].report);
+        setPreviewUrl(splitItems[0].imageUrl);
       }
 
-      const result: PrintAnalysisReport = await response.json();
       setLoadingProgress(100);
       setLoadingStep("Curation statement complete!");
-
-      // Generate a small compressed JPEG thumbnail image (300x300) for local storage history items
-      let thumbnailImg = previewUrl || "";
-      try {
-        thumbnailImg = await generateThumbnail(selectedFile, 300, 300);
-      } catch (thumbErr) {
-        console.warn("Could not generate thumbnail, falling back to original preview logic:", thumbErr);
-      }
-
-      // Add to local catalog history
-      const newHistoryItemId = crypto.randomUUID();
-      const historyItem: AnalysisHistoryItem = {
-        id: newHistoryItemId,
-        timestamp: new Date().toLocaleDateString("en-US", {
-          month: "short",
-          day: "numeric",
-          year: "numeric",
-          hour: "2-digit",
-          minute: "2-digit",
-        }),
-        imageUrl: thumbnailImg || (base64Data.startsWith("data:") ? base64Data : `data:${selectedFile.type};base64,${base64Data}`),
-        imageFileName: selectedFile.name || "Uploaded_Print.png",
-        imageSize: formatBytes(selectedFile.size),
-        report: result,
-        signatureImageUrl: signaturePreview || undefined,
-        damageImageUrl: damagePreview || undefined,
-        scaleImageUrl: scalePreview || undefined,
-      };
-
-      let activeHistory = [...catalogHistory];
-      let currentId = activeCatalogId;
-      if (targetOption === "new") {
-        try {
-          currentId = await createNewCatalog(newCatalogName);
-          activeHistory = [];
-          setTargetOption("current");
-          setNewCatalogName("");
-        } catch (catErr: any) {
-          setError(catErr.message);
-          setIsLoading(false);
-          clearInterval(interval);
-          clearInterval(progressTextTimer);
-          return;
-        }
-      }
-
-      setCurrentHistoryItemId(newHistoryItemId);
-      
-      const newHistory = [historyItem, ...activeHistory];
-      setCatalogHistory(newHistory);
-      
-      const updatedCatalogs = catalogs.map(c => 
-        c.id === currentId ? { ...c, timestamp: new Date().toISOString() } : c
-      );
-      setCatalogs(updatedCatalogs);
-      
-      try {
-        await setCatalogItemsDB(currentId, newHistory);
-        await setCatalogsListDB(updatedCatalogs);
-      } catch (err: any) {
-        console.error("Failed to save catalog items to IndexedDB:", err);
-      }
-
-      if (currentUser) {
-        try {
-          const syncedHistory = await uploadNewScansToServer(newHistory, currentUser);
-          const res = await fetch(`/api/user/catalog?id=${currentId}`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "X-User-Header": currentUser
-            },
-            body: JSON.stringify({ catalog: syncedHistory })
-          });
-          
-          await fetch("/api/user/catalog-list", {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "X-User-Header": currentUser
-            },
-            body: JSON.stringify({ catalogs: updatedCatalogs, activeCatalogId: currentId })
-          });
-
-          if (res.ok) {
-            setCatalogHistory(syncedHistory);
-            await setCatalogItemsDB(currentId, syncedHistory);
-          }
-        } catch (serverErr) {
-          console.error("Failed to sync catalog with server:", serverErr);
-        }
-      }
-
       setTimeout(() => {
         setIsLoading(false);
-        setAnalysisResult(result);
       }, 300);
 
     } catch (err: any) {
@@ -1284,6 +1301,16 @@ export default function App() {
           lotNumber: lotNumber.trim() || undefined,
           lotTitle: lotTitle.trim() || undefined
         };
+      }
+      return item;
+    });
+    updateHistory(updated);
+  };
+
+  const updateItemCatalogue = (id: string, catalogueId: string | null) => {
+    const updated = catalogHistory.map((item) => {
+      if (item.id === id) {
+        return { ...item, catalogue_id: catalogueId };
       }
       return item;
     });
@@ -1558,13 +1585,6 @@ export default function App() {
                     setScaleFile={setScaleFile}
                     setScalePreview={setScalePreview}
                     scaleInputRef={scaleInputRef}
-                    catalogs={catalogs}
-                    activeCatalogId={activeCatalogId}
-                    targetOption={targetOption}
-                    setTargetOption={setTargetOption}
-                    newCatalogName={newCatalogName}
-                    setNewCatalogName={setNewCatalogName}
-                    onSwitchCatalog={handleSwitchCatalog}
                   />
 
                   {/* Right Column: Supporting Notes */}
@@ -1580,6 +1600,9 @@ export default function App() {
                     selectedFile={selectedFile}
                     error={error}
                     onSubmit={handleAnalysisSubmit}
+                    appraisalMethod={appraisalMethod}
+                    setAppraisalMethod={setAppraisalMethod}
+                    appraisalMethods={appraisalMethods}
                   />
 
                 </div>
@@ -1676,17 +1699,12 @@ export default function App() {
           </div>
         ) : activeTab === "batch" ? (
           <BatchProcessor 
-            catalogHistory={catalogHistory} 
+            itemDatabase={catalogHistory} 
             updateHistory={updateHistory} 
             currency={currency} 
-            catalogs={catalogs}
-            activeCatalogId={activeCatalogId}
-            onSwitchCatalog={handleSwitchCatalog}
-            targetOption={targetOption}
-            setTargetOption={setTargetOption}
-            newCatalogName={newCatalogName}
-            setNewCatalogName={setNewCatalogName}
-            createNewCatalog={createNewCatalog}
+            appraisalMethod={appraisalMethod}
+            setAppraisalMethod={setAppraisalMethod}
+            appraisalMethods={appraisalMethods}
           />
         ) : activeTab === "history" ? (
           /* Collection Catalog Library log view */
@@ -1699,6 +1717,7 @@ export default function App() {
             setSelectedItemIds={setSelectedItemIds}
             toggleItemSelection={toggleItemSelection}
             updateItemLot={updateItemLot}
+            updateItemCatalogue={updateItemCatalogue}
             deleteHistoryItem={deleteHistoryItem}
             emailAddress={emailAddress}
             setEmailAddress={setEmailAddress}

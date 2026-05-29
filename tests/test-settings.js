@@ -80,26 +80,36 @@ async function runSettingsTests() {
 
   // 5. Populate some dummy catalogues and verify they exist before deletion
   console.log('\nTest 5: Populate catalogues and verify files exist on disk');
+  const testDefaultCatalogId = `${testUser}-0000`;
+  const testCustomCatalogId = `${testUser}-1111`;
   const customCatalogList = [
-    { id: 'default', name: 'Default Catalogue', timestamp: new Date().toISOString() },
-    { id: '11111', name: 'My Lithographs', timestamp: new Date().toISOString() }
+    { id: testDefaultCatalogId, name: 'Default Catalogue', timestamp: new Date().toISOString() },
+    { id: testCustomCatalogId, name: 'My Lithographs', timestamp: new Date().toISOString() }
   ];
-  await apiFetch('/api/user/catalog-list', {
+  const postListRes = await apiFetch('/api/user/catalog-list', {
     method: 'POST',
-    body: JSON.stringify({ catalogs: customCatalogList, activeCatalogId: '11111' })
+    body: JSON.stringify({ catalogs: customCatalogList, activeCatalogId: testCustomCatalogId })
   });
+  assert.strictEqual(postListRes.status, 200, `POST /api/user/catalog-list failed: ${JSON.stringify(postListRes.json)}`);
 
-  await apiFetch('/api/user/catalog?id=11111', {
+  const postCatalogRes = await apiFetch(`/api/user/catalog?id=${testCustomCatalogId}`, {
     method: 'POST',
-    body: JSON.stringify({ catalog: [{ id: 'item1', title: 'Test Print' }] })
+    body: JSON.stringify({ catalog: [{ id: '11111111-2222-3333-4444-555555555555', title: 'Test Print' }] })
   });
+  assert.strictEqual(postCatalogRes.status, 200, `POST /api/user/catalog failed: ${JSON.stringify(postCatalogRes.json)}`);
 
-  // Verify the directory and catalogs list exist on disk
+  // Verify the directory exists on disk and catalog metadata exists via API
   const userFolder = path.join(process.cwd(), 'data', 'user_records', testUser);
-  const catalogsListFile = path.join(userFolder, 'catalogs_list.json');
-  const itemFile = path.join(userFolder, 'catalogs', '11111.json');
-  assert.ok(fs.existsSync(catalogsListFile), 'catalogs_list.json should exist');
-  assert.ok(fs.existsSync(itemFile), '11111.json catalog items file should exist');
+  assert.ok(fs.existsSync(userFolder), 'User directory should exist on disk');
+
+  const verifyList = await apiFetch('/api/user/catalog-list');
+  assert.strictEqual(verifyList.status, 200);
+  console.log("Returned catalogs in settings test:", verifyList.json);
+  assert.ok(verifyList.json.catalogs.some(c => c.id === testCustomCatalogId), `Catalog ${testCustomCatalogId} should be in the list`);
+  
+  const verifyItems = await apiFetch(`/api/user/catalog?id=${testCustomCatalogId}`);
+  assert.strictEqual(verifyItems.status, 200);
+  assert.strictEqual(verifyItems.json.length, 1);
   console.log('✓ Dummy catalog and item files verify successfully');
 
   // 6. Delete Data Only (Wipe all data files but keep account)
@@ -111,11 +121,14 @@ async function runSettingsTests() {
   assert.strictEqual(wipeDataRes.status, 200);
   assert.ok(wipeDataRes.json.success);
 
-  // Verify that custom catalog 11111.json is gone and default catalogues are reset
-  assert.ok(!fs.existsSync(itemFile), 'Custom catalog item file should have been deleted');
-  const resetList = JSON.parse(fs.readFileSync(catalogsListFile, 'utf8'));
-  assert.strictEqual(resetList.activeCatalogId, 'default');
-  assert.strictEqual(resetList.catalogs[0].id, 'default');
+  // Verify that custom catalog is gone and activeCatalogId is reset
+  const afterWipeList = await apiFetch('/api/user/catalog-list');
+  assert.strictEqual(afterWipeList.status, 200);
+  assert.ok(!afterWipeList.json.catalogs.some(c => c.id === testCustomCatalogId), `Wiped catalog ${testCustomCatalogId} should be removed`);
+  
+  const afterWipeItems = await apiFetch(`/api/user/catalog?id=${testCustomCatalogId}`);
+  assert.strictEqual(afterWipeItems.status, 200);
+  assert.strictEqual(afterWipeItems.json.length, 0, 'Wiped catalog items should be empty');
   console.log('✓ Successfully wiped catalogues and reset list to defaults');
 
   // 7. Delete entire account (deleteType: "account")

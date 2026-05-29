@@ -147,3 +147,31 @@ export async function deleteCatalogItemsDB(id: string): Promise<void> {
   await deleteValueDB(key);
 }
 
+const ITEM_DATABASE_KEY = "item_database";
+
+export async function getItemDatabaseDB(): Promise<AnalysisHistoryItem[]> {
+  const result = await getValueDB<AnalysisHistoryItem[]>(ITEM_DATABASE_KEY);
+  if (!result || !Array.isArray(result)) {
+    const list = await getCatalogsListDB();
+    const allItems: AnalysisHistoryItem[] = [];
+    for (const cat of list) {
+      const items = await getCatalogItemsDB(cat.id);
+      items.forEach(it => {
+        if (!it.catalogue_id) it.catalogue_id = cat.id;
+      });
+      allItems.push(...items);
+    }
+    if (allItems.length > 0) {
+      await setValueDB(ITEM_DATABASE_KEY, allItems);
+      return allItems;
+    }
+    return [];
+  }
+  return result;
+}
+
+export async function setItemDatabaseDB(items: AnalysisHistoryItem[]): Promise<void> {
+  await setValueDB(ITEM_DATABASE_KEY, items);
+}
+
+
