@@ -32,7 +32,8 @@ import {
   setCatalogItemsDB, 
   deleteCatalogItemsDB,
   getItemDatabaseDB,
-  setItemDatabaseDB
+  setItemDatabaseDB,
+  migrateGuestToUserDB
 } from "./utils/db";
 
 // Helper: Generate a small compressed JPEG thumbnail image (max 300x300) for history items to prevent LocalStorage QuotaExceededError
@@ -627,6 +628,7 @@ export default function App() {
         setIsSignUpMode(false);
         
         const loggedInUser = data.username;
+        await migrateGuestToUserDB(loggedInUser);
         localStorage.setItem("print_analyzer_user", loggedInUser);
         setCurrentUser(loggedInUser);
 

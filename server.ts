@@ -53,6 +53,44 @@ function getAiClient(): GoogleGenAI {
   return aiClient;
 }
 
+// Helper to resolve user image input (data URLs, local user-images URLs, or raw Base64 strings)
+const resolveImageInput = (
+  input: string | undefined, 
+  defaultMimeType: string | undefined
+): { base64: string; mimeType: string } | null => {
+  if (!input) return null;
+  
+  if (input.startsWith("/api/user-images/")) {
+    const relativePart = input.replace("/api/user-images/", "");
+    const localFilePath = path.join(USER_RECORDS_DIR, relativePart);
+    if (fs.existsSync(localFilePath)) {
+      const fileBuffer = fs.readFileSync(localFilePath);
+      const base64 = fileBuffer.toString("base64");
+      const ext = path.extname(localFilePath).toLowerCase();
+      let mimeType = "image/jpeg";
+      if (ext === ".png") mimeType = "image/png";
+      else if (ext === ".webp") mimeType = "image/webp";
+      return { base64, mimeType };
+    }
+  }
+
+  // Handle standard data URI format
+  if (input.startsWith("data:")) {
+    const matches = input.match(/^data:([a-zA-Z0-9]+\/[a-zA-Z0-9-.+]+);base64,(.*)$/);
+    if (matches && matches.length === 3) {
+      return { mimeType: matches[1], base64: matches[2] };
+    }
+  }
+
+  // Remove potential data URL prefix if any
+  const base64 = input.replace(/^data:image\/\w+;base64,/, "");
+
+  return {
+    base64,
+    mimeType: defaultMimeType || "image/jpeg"
+  };
+};
+
 // ----------------------------------------
 // API ENDPOINTS
 // ----------------------------------------
@@ -84,23 +122,28 @@ app.post("/api/analyze-print", async (req, res) => {
       method = "gemini-standard"
     } = req.body;
 
-    if (!imageBase64) {
+    const resolvedImage = resolveImageInput(imageBase64, mimeType);
+    if (!resolvedImage) {
       return res.status(400).json({ error: "Missing uploaded image content." });
     }
+
+    const resolvedSignature = resolveImageInput(signatureBase64, signatureMimeType) || undefined;
+    const resolvedDamage = resolveImageInput(damageBase64, damageMimeType) || undefined;
+    const resolvedScale = resolveImageInput(scaleBase64, scaleMimeType) || undefined;
 
     const ai = getAiClient();
     const appraiser = getAppraiser(method, ai);
 
     const reportData = await appraiser.appraise({
-      imageBase64,
-      mimeType,
+      imageBase64: resolvedImage.base64,
+      mimeType: resolvedImage.mimeType,
       userNotes,
-      signatureBase64,
-      signatureMimeType,
-      damageBase64,
-      damageMimeType,
-      scaleBase64,
-      scaleMimeType,
+      signatureBase64: resolvedSignature?.base64,
+      signatureMimeType: resolvedSignature?.mimeType,
+      damageBase64: resolvedDamage?.base64,
+      damageMimeType: resolvedDamage?.mimeType,
+      scaleBase64: resolvedScale?.base64,
+      scaleMimeType: resolvedScale?.mimeType,
       currency
     });
 
@@ -261,13 +304,14 @@ app.post("/api/get-local-file", async (req, res) => {
 app.post("/api/detect-artworks", async (req, res) => {
   try {
     const { imageBase64, mimeType } = req.body;
-    if (!imageBase64) {
+    const resolvedImage = resolveImageInput(imageBase64, mimeType);
+    if (!resolvedImage) {
       return res.status(400).json({ error: "Missing uploaded image content." });
     }
 
     const ai = getAiClient();
-    const cleanBase64 = imageBase64.replace(/^data:image\/\w+;base64,/, "");
-    const cleanMimeType = mimeType || "image/jpeg";
+    const cleanBase64 = resolvedImage.base64;
+    const cleanMimeType = resolvedImage.mimeType;
 
     const parts = [
       {

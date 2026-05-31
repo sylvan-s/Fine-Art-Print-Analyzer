@@ -463,34 +463,39 @@ export default function ReportView({
               )}
             </div>
             
-            <div className="flex flex-wrap gap-2.5 items-end">
-              {fileName && (
-                <span className="text-[11px] font-mono bg-rosebery-cream-bg border border-rosebery-border px-3 py-1.5 rounded-full text-rosebery-muted">
-                  Scan File: <span className="text-rosebery-charcoal font-semibold">{fileName}</span> {fileSize ? `(${fileSize})` : ""}
-                </span>
-              )}
-              {report.modelUsed && (
-                <span className="text-[11px] font-mono bg-rosebery-cream-bg border border-rosebery-border px-3 py-1.5 rounded-full text-rosebery-muted">
-                  Engine: <span className="text-rosebery-charcoal font-semibold">{report.modelUsed}</span>
-                  {report.promptVersion && (
-                    <> (Prompt: <span className="text-rosebery-charcoal font-semibold">{report.promptVersion}</span>)</>
-                  )}
-                </span>
-              )}
-              {isEditing ? (
-                <div className="space-y-1">
-                  <label className="text-[10px] font-mono text-rosebery-primary uppercase tracking-wider font-semibold block">Creation Period</label>
-                  <input
-                    type="text"
-                    value={editPeriod}
-                    onChange={(e) => setEditPeriod(e.target.value)}
-                    className="bg-rosebery-sage border border-rosebery-sage-border focus:border-rosebery-primary focus:ring-1 focus:ring-rosebery-primary/20 text-xs font-mono text-rosebery-charcoal px-3.5 py-1.5 rounded-sm focus:outline-none"
-                  />
+            <div className="space-y-2.5">
+              <div className="flex flex-wrap gap-2.5 items-center">
+                {fileName && (
+                  <span className="text-[11px] font-mono bg-rosebery-cream-bg border border-rosebery-border px-3 py-1.5 rounded-full text-rosebery-muted">
+                    Scan File: <span className="text-rosebery-charcoal font-semibold">{fileName}</span> {fileSize ? `(${fileSize})` : ""}
+                  </span>
+                )}
+                {isEditing ? (
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-mono text-rosebery-primary uppercase tracking-wider font-semibold block">Creation Period</label>
+                    <input
+                      type="text"
+                      value={editPeriod}
+                      onChange={(e) => setEditPeriod(e.target.value)}
+                      className="bg-rosebery-sage border border-rosebery-sage-border focus:border-rosebery-primary focus:ring-1 focus:ring-rosebery-primary/20 text-xs font-mono text-rosebery-charcoal px-3.5 py-1.5 rounded-sm focus:outline-none"
+                    />
+                  </div>
+                ) : (
+                  <span className="text-xs font-mono bg-rosebery-primary text-white px-3.5 py-1.5 rounded-sm font-semibold uppercase tracking-wider">
+                    {report.creationPeriod}
+                  </span>
+                )}
+              </div>
+              
+              {(report.modelUsed || report.promptVersion) && (
+                <div className="text-[11px] font-mono text-rosebery-muted pl-1">
+                  Appraisal Method: <span className="text-rosebery-charcoal font-semibold">{(() => {
+                    const approach = report.promptVersion || "standard";
+                    const formattedApproach = approach.charAt(0).toUpperCase() + approach.slice(1);
+                    const model = report.modelUsed || "gemini-2.5-flash";
+                    return `${formattedApproach} - ${model}`;
+                  })()}</span>
                 </div>
-              ) : (
-                <span className="text-xs font-mono bg-rosebery-primary text-white px-3.5 py-1.5 rounded-sm font-semibold uppercase tracking-wider">
-                  {report.creationPeriod}
-                </span>
               )}
             </div>
           </div>
@@ -1529,10 +1534,14 @@ export default function ReportView({
             <span className="text-[9px] font-mono text-rosebery-charcoal bg-rosebery-cream-bg px-2 py-1 border border-rosebery-border rounded-sm uppercase">
               PM-CERT-{report.artworkTitle.substring(0,4).replace(/[^a-zA-Z]/g, "").toUpperCase()}-{Math.random().toString(36).substring(2,7).toUpperCase()}
             </span>
-            {report.modelUsed && (
+            {(report.modelUsed || report.promptVersion) && (
               <span className="text-[9px] font-mono text-rosebery-muted block mt-1">
-                Appraisal Engine: <span className="text-rosebery-charcoal font-semibold">{report.modelUsed}</span>
-                {report.promptVersion && <> (Prompt Version: <span className="text-rosebery-charcoal font-semibold">{report.promptVersion}</span>)</>}
+                Appraisal Method: <span className="text-rosebery-charcoal font-semibold">{(() => {
+                  const approach = report.promptVersion || "standard";
+                  const formattedApproach = approach.charAt(0).toUpperCase() + approach.slice(1);
+                  const model = report.modelUsed || "gemini-2.5-flash";
+                  return `${formattedApproach} - ${model}`;
+                })()}</span>
               </span>
             )}
           </div>

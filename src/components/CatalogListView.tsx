@@ -198,6 +198,18 @@ export default function CatalogListView({
   };
   const [filterFilename, setFilterFilename] = React.useState("");
   const [filterDate, setFilterDate] = React.useState("");
+  const [filterAppraisalMethod, setFilterAppraisalMethod] = React.useState<string>("all");
+
+  const uniqueModels = React.useMemo(() => {
+    const models = new Set<string>();
+    catalogHistory.forEach(item => {
+      const approach = item.report.promptVersion || "standard";
+      const formattedApproach = approach.charAt(0).toUpperCase() + approach.slice(1);
+      const model = item.report.modelUsed || "gemini-2.5-flash";
+      models.add(`${formattedApproach} - ${model}`);
+    });
+    return Array.from(models);
+  }, [catalogHistory]);
 
   const filteredHistory = React.useMemo(() => {
     return catalogHistory.filter((item) => {
@@ -219,16 +231,25 @@ export default function CatalogListView({
       if (filterDate !== "") {
         const filterD = new Date(filterDate);
         const itemD = new Date(item.timestamp);
-        const match = 
+        const match =
           filterD.getFullYear() === itemD.getFullYear() &&
           filterD.getMonth() === itemD.getMonth() &&
           filterD.getDate() === itemD.getDate();
         if (!match) return false;
       }
+
+      // Appraisal Method Filter
+      if (filterAppraisalMethod !== "all") {
+        const approach = item.report.promptVersion || "standard";
+        const formattedApproach = approach.charAt(0).toUpperCase() + approach.slice(1);
+        const model = item.report.modelUsed || "gemini-2.5-flash";
+        const itemMethod = `${formattedApproach} - ${model}`;
+        if (itemMethod !== filterAppraisalMethod) return false;
+      }
       
       return true;
     });
-  }, [catalogHistory, selectedCatalogueFilter, filterFilename, filterDate]);
+  }, [catalogHistory, selectedCatalogueFilter, filterFilename, filterDate, filterAppraisalMethod]);
 
   const activeItem =
     filteredHistory.find((item) => item.id === (selectedHistoryId || filteredHistory[0]?.id)) ||
@@ -582,7 +603,7 @@ export default function CatalogListView({
         </div>
 
         {/* Filters Row */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-1">
+        <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 pt-1">
           {/* 1. Catalogue ID Filter */}
           <div className="space-y-1">
             <label className="text-[10px] font-mono text-rosebery-primary font-bold uppercase tracking-wider block">
@@ -640,6 +661,25 @@ export default function CatalogListView({
                 </button>
               )}
             </div>
+          </div>
+
+          {/* 4. Appraisal Method Filter */}
+          <div className="space-y-1">
+            <label className="text-[10px] font-mono text-rosebery-primary font-bold uppercase tracking-wider block">
+              Filter by Appraisal Method
+            </label>
+            <select
+              value={filterAppraisalMethod}
+              onChange={(e) => setFilterAppraisalMethod(e.target.value)}
+              className="w-full bg-white border border-rosebery-border rounded-xs px-3 py-2 text-xs text-rosebery-charcoal outline-none focus:border-rosebery-primary font-serif cursor-pointer"
+            >
+              <option value="all">Show All Methods</option>
+              {uniqueModels.map((model) => (
+                <option key={model} value={model}>
+                  {model}
+                </option>
+              ))}
+            </select>
           </div>
         </div>
       </div>
@@ -1083,6 +1123,7 @@ export default function CatalogListView({
           {/* Catalog items sidebar with either Flat or grouped list */}
           <HistorySidebar
             catalogHistory={filteredHistory}
+            fullHistory={catalogHistory}
             selectedHistoryId={selectedHistoryId}
             setSelectedHistoryId={setSelectedHistoryId}
             selectedItemIds={selectedItemIds}

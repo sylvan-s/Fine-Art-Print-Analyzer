@@ -352,8 +352,20 @@ export async function saveUserItems(userId: string, items: AnalysisHistoryItem[]
       const checkAppQuery = `SELECT id FROM appraisals WHERE item_id = $1;`;
       const appRes = await client.query(checkAppQuery, [itemId]);
       
-      const modelName = item.report.modelUsed || 'gemini-2.5-flash';
+      const modelName = item.report?.modelUsed || 'gemini-2.5-flash';
       let appraisalId: string;
+      const reportContent = item.report ? JSON.stringify(item.report) : JSON.stringify({
+        techniques: [],
+        artworkTitle: (item as any).title || 'Untitled',
+        likelyArtist: 'Unknown',
+        conditionNotes: {},
+        creationPeriod: 'Unknown',
+        auctionEstimate: { min: 0, max: 0, formattedEstimate: '$0' },
+        titleConfidence: 0,
+        artistConfidence: 0,
+        modelUsed: 'gemini-2.5-flash'
+      });
+
       if (appRes.rows.length === 0) {
         const insertAppQuery = `
           INSERT INTO appraisals (item_id, model_name, result, status, completed_at)
@@ -363,7 +375,7 @@ export async function saveUserItems(userId: string, items: AnalysisHistoryItem[]
         const insertAppRes = await client.query(insertAppQuery, [
           itemId,
           modelName,
-          JSON.stringify(item.report)
+          reportContent
         ]);
         appraisalId = insertAppRes.rows[0].id;
       } else {
@@ -373,7 +385,7 @@ export async function saveUserItems(userId: string, items: AnalysisHistoryItem[]
           SET model_name = $1, result = $2, status = 'complete', completed_at = NOW()
           WHERE item_id = $3;
         `;
-        await client.query(updateAppQuery, [modelName, JSON.stringify(item.report), itemId]);
+        await client.query(updateAppQuery, [modelName, reportContent, itemId]);
       }
 
       // E. Save/Verify Supplementary Crops in images table
@@ -525,7 +537,19 @@ export async function saveCatalogueItems(userId: string, catalogueId: string, it
       const checkAppQuery = `SELECT id FROM appraisals WHERE item_id = $1;`;
       const appRes = await client.query(checkAppQuery, [itemId]);
       
-      const modelName = item.report.modelUsed || 'gemini-2.5-flash';
+      const modelName = item.report?.modelUsed || 'gemini-2.5-flash';
+      const reportContent = item.report ? JSON.stringify(item.report) : JSON.stringify({
+        techniques: [],
+        artworkTitle: (item as any).title || 'Untitled',
+        likelyArtist: 'Unknown',
+        conditionNotes: {},
+        creationPeriod: 'Unknown',
+        auctionEstimate: { min: 0, max: 0, formattedEstimate: '$0' },
+        titleConfidence: 0,
+        artistConfidence: 0,
+        modelUsed: 'gemini-2.5-flash'
+      });
+
       if (appRes.rows.length === 0) {
         const insertAppQuery = `
           INSERT INTO appraisals (item_id, model_name, result, status, completed_at)
@@ -534,7 +558,7 @@ export async function saveCatalogueItems(userId: string, catalogueId: string, it
         await client.query(insertAppQuery, [
           itemId,
           modelName,
-          JSON.stringify(item.report)
+          reportContent
         ]);
       } else {
         const updateAppQuery = `
@@ -542,7 +566,7 @@ export async function saveCatalogueItems(userId: string, catalogueId: string, it
           SET model_name = $1, result = $2, status = 'complete', completed_at = NOW()
           WHERE item_id = $3;
         `;
-        await client.query(updateAppQuery, [modelName, JSON.stringify(item.report), itemId]);
+        await client.query(updateAppQuery, [modelName, reportContent, itemId]);
       }
 
       // E. Save/Verify Supplementary Crops

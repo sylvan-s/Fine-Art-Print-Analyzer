@@ -4,6 +4,7 @@ import { AnalysisHistoryItem, CatalogMetadata } from "../types";
 
 interface HistorySidebarProps {
   catalogHistory: AnalysisHistoryItem[];
+  fullHistory: AnalysisHistoryItem[];
   selectedHistoryId: string | null;
   setSelectedHistoryId: (id: string | null) => void;
   selectedItemIds: string[];
@@ -24,6 +25,7 @@ interface HistorySidebarProps {
 
 export default function HistorySidebar({
   catalogHistory,
+  fullHistory,
   selectedHistoryId,
   setSelectedHistoryId,
   selectedItemIds,
@@ -41,7 +43,10 @@ export default function HistorySidebar({
   catalogs,
   updateMultipleItemsCatalogue,
 }: HistorySidebarProps) {
+  const [selectedAction, setSelectedAction] = React.useState<string>("");
   const [bulkCatalogId, setBulkCatalogId] = React.useState<string>("");
+  const [bulkLotNumber, setBulkLotNumber] = React.useState<string>("");
+  const [bulkLotTitle, setBulkLotTitle] = React.useState<string>("");
 
   const allVisibleSelected = React.useMemo(() => {
     return catalogHistory.length > 0 && catalogHistory.every(item => selectedItemIds.includes(item.id));
@@ -58,10 +63,6 @@ export default function HistorySidebar({
     }
   };
 
-  const handleClearSelection = () => {
-    setSelectedItemIds([]);
-  };
-
   const handleApplyBulkCatalog = () => {
     if (!bulkCatalogId) {
       alert("Please choose a catalogue to allocate the selected items to.");
@@ -71,7 +72,88 @@ export default function HistorySidebar({
     updateMultipleItemsCatalogue(selectedItemIds, val);
     alert(`Successfully allocated ${selectedItemIds.length} items to the selected catalogue.`);
     setSelectedItemIds([]);
+    setSelectedAction("");
     setBulkCatalogId("");
+  };
+
+  const handleApplyBulkLot = () => {
+    if (!bulkLotNumber.trim()) {
+      alert("Please enter a Lot Number.");
+      return;
+    }
+    const updated = fullHistory.map((item) => {
+      if (selectedItemIds.includes(item.id)) {
+        return {
+          ...item,
+          lotNumber: bulkLotNumber.trim(),
+          lotTitle: bulkLotTitle.trim() || undefined,
+        };
+      }
+      return item;
+    });
+    updateHistory(updated);
+    alert(`Successfully assigned ${selectedItemIds.length} items to Lot ${bulkLotNumber.trim()}.`);
+    setSelectedItemIds([]);
+    setSelectedAction("");
+    setBulkLotNumber("");
+    setBulkLotTitle("");
+  };
+
+  const handleDeassignCatalog = () => {
+    updateMultipleItemsCatalogue(selectedItemIds, null);
+    alert(`Successfully de-assigned ${selectedItemIds.length} items from their catalogues.`);
+    setSelectedItemIds([]);
+    setSelectedAction("");
+  };
+
+  const handleDeassignLot = () => {
+    const updated = fullHistory.map((item) => {
+      if (selectedItemIds.includes(item.id)) {
+        return {
+          ...item,
+          lotNumber: undefined,
+          lotTitle: undefined,
+        };
+      }
+      return item;
+    });
+    updateHistory(updated);
+    alert(`Successfully de-assigned ${selectedItemIds.length} items from their Group Lots.`);
+    setSelectedItemIds([]);
+    setSelectedAction("");
+  };
+
+  const getActionLabel = () => {
+    switch (selectedAction) {
+      case "assign-catalogue":
+        return "Assign Catalogue";
+      case "assign-lot":
+        return "Assign Lot";
+      case "deassign-catalogue":
+        return "De-assign Catalogue";
+      case "deassign-lot":
+        return "De-assign Lot";
+      default:
+        return "Apply Action";
+    }
+  };
+
+  const handleExecuteAction = () => {
+    if (!selectedAction) return;
+    switch (selectedAction) {
+      case "assign-catalogue":
+        handleApplyBulkCatalog();
+        break;
+      case "assign-lot":
+        handleApplyBulkLot();
+        break;
+      case "deassign-catalogue":
+        handleDeassignCatalog();
+        break;
+      case "deassign-lot":
+        handleDeassignLot();
+        break;
+    }
   };
 
   return (
@@ -115,52 +197,115 @@ export default function HistorySidebar({
           )}
         </div>
         
-        <div className="flex gap-2">
-          <button
-            type="button"
+        {/* Custom Checkbox for Select All and dynamic execution button */}
+        <div className="flex items-center justify-between gap-2 py-1 flex-wrap">
+          <div
             onClick={handleSelectAllVisible}
-            className="flex-1 py-1.5 px-2 bg-rosebery-cream-bg hover:bg-stone-200/60 border border-rosebery-border hover:border-rosebery-primary text-rosebery-primary rounded-xs text-[9px] uppercase font-mono font-bold tracking-wider transition-all duration-200 cursor-pointer text-center"
+            className="flex items-center gap-2 cursor-pointer select-none"
+            title="Select/deselect all visible items"
           >
-            {allVisibleSelected ? "Deselect All" : `Select All (${catalogHistory.length})`}
-          </button>
+            <div
+              className={`w-3.5 h-3.5 rounded-xs border flex items-center justify-center transition-all duration-200 ${
+                allVisibleSelected
+                  ? "bg-rosebery-primary border-rosebery-primary text-white"
+                  : "border-stone-300 hover:border-rosebery-primary bg-white"
+              }`}
+            >
+              {allVisibleSelected && <Check className="w-2.5 h-2.5 stroke-[3]" />}
+            </div>
+            <span className="text-[10px] font-mono text-rosebery-primary font-bold uppercase tracking-wider">
+              Select All ({catalogHistory.length})
+            </span>
+          </div>
+
           {selectedItemIds.length > 0 && (
             <button
               type="button"
-              onClick={handleClearSelection}
-              className="py-1.5 px-3 bg-red-50 hover:bg-red-100/80 border border-red-200 text-red-800 rounded-xs text-[9px] uppercase font-mono font-bold tracking-wider transition-all duration-200 cursor-pointer text-center"
+              onClick={handleExecuteAction}
+              disabled={!selectedAction}
+              className={`py-1 px-3 bg-rosebery-primary hover:bg-rosebery-primary-hover text-white rounded-xs text-[9px] uppercase font-mono font-bold tracking-wider transition-all duration-200 cursor-pointer font-bold shrink-0 ${
+                !selectedAction ? "opacity-50 cursor-not-allowed bg-stone-100 hover:bg-stone-100 text-stone-400 border border-stone-200" : ""
+              }`}
             >
-              Clear
+              {getActionLabel()}
             </button>
           )}
         </div>
 
-        {selectedItemIds.length > 0 && (
-          <div className="space-y-2 pt-2.5 border-t border-rosebery-border/60">
-            <label className="text-[9px] font-mono text-stone-500 uppercase block font-semibold">
-              Allocate Selection to:
-            </label>
-            <div className="flex gap-2">
+        {selectedItemIds.length === 0 ? (
+          <div className="text-[10px] font-mono text-stone-400 italic pt-1 text-center">
+            Select items below to perform bulk actions
+          </div>
+        ) : (
+          <div className="space-y-3 pt-2.5 border-t border-rosebery-border/60">
+            <div className="space-y-1">
+              <label className="text-[9px] font-mono text-stone-500 uppercase block font-semibold">
+                Bulk Action:
+              </label>
               <select
-                value={bulkCatalogId}
-                onChange={(e) => setBulkCatalogId(e.target.value)}
-                className="flex-1 bg-white border border-rosebery-border rounded-xs px-2.5 py-1 text-xs text-rosebery-charcoal outline-none focus:border-rosebery-primary font-serif cursor-pointer"
+                value={selectedAction}
+                onChange={(e) => setSelectedAction(e.target.value)}
+                className="w-full bg-white border border-rosebery-border rounded-xs px-2 py-1 text-xs text-rosebery-charcoal outline-none focus:border-rosebery-primary font-serif cursor-pointer"
               >
-                <option value="">-- Choose Catalogue --</option>
-                <option value="none">None / Uncatalogued</option>
-                {catalogs.map((cat) => (
-                  <option key={cat.id} value={cat.id}>
-                    {cat.name}
-                  </option>
-                ))}
+                <option value="">-- Choose Bulk Action --</option>
+                <option value="assign-catalogue">Assign selection to a catalogue</option>
+                <option value="assign-lot">Assign selection to a grouped lot</option>
+                <option value="deassign-catalogue">De-assign selection from catalogue</option>
+                <option value="deassign-lot">De-assign selection from group lot</option>
               </select>
-              <button
-                type="button"
-                onClick={handleApplyBulkCatalog}
-                className="py-1 px-3 bg-rosebery-primary hover:bg-rosebery-primary-hover text-white rounded-xs text-[9px] uppercase font-mono font-bold tracking-wider transition-all duration-200 cursor-pointer font-bold"
-              >
-                Apply
-              </button>
             </div>
+
+            {selectedAction === "assign-catalogue" && (
+              <div className="space-y-2.5 pt-1.5 border-t border-dashed border-rosebery-border/40">
+                <div className="space-y-1">
+                  <label className="text-[9px] font-mono text-stone-500 uppercase block font-semibold">
+                    Select Catalogue:
+                  </label>
+                  <select
+                    value={bulkCatalogId}
+                    onChange={(e) => setBulkCatalogId(e.target.value)}
+                    className="w-full bg-white border border-rosebery-border rounded-xs px-2.5 py-1 text-xs text-rosebery-charcoal outline-none focus:border-rosebery-primary font-serif cursor-pointer"
+                  >
+                    <option value="">-- Choose Catalogue --</option>
+                    <option value="none">None / Uncatalogued</option>
+                    {catalogs.map((cat) => (
+                      <option key={cat.id} value={cat.id}>
+                        {cat.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            )}
+
+            {selectedAction === "assign-lot" && (
+              <div className="space-y-2.5 pt-1.5 border-t border-dashed border-rosebery-border/40">
+                <div className="space-y-1">
+                  <label className="text-[9px] font-mono text-stone-500 uppercase block font-semibold">
+                    Lot Number:
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="e.g. Lot 101"
+                    value={bulkLotNumber}
+                    onChange={(e) => setBulkLotNumber(e.target.value)}
+                    className="w-full bg-white border border-rosebery-border rounded-xs px-2.5 py-1 text-xs text-rosebery-charcoal outline-none focus:border-rosebery-primary font-serif"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[9px] font-mono text-stone-500 uppercase block font-semibold">
+                    Lot Category / Title:
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="e.g. Post-war Prints"
+                    value={bulkLotTitle}
+                    onChange={(e) => setBulkLotTitle(e.target.value)}
+                    className="w-full bg-white border border-rosebery-border rounded-xs px-2.5 py-1 text-xs text-rosebery-charcoal outline-none focus:border-rosebery-primary font-serif"
+                  />
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -300,17 +445,25 @@ export default function HistorySidebar({
                     onDrop={(e) => {
                       e.preventDefault();
                       if (draggedIndex === null) return;
-                      const list = catalogHistory.map((it) => ({ ...it }));
-                      const draggedItem = list[draggedIndex];
+                      
+                      const list = fullHistory.map((it) => ({ ...it }));
+                      const draggedItemInFull = list.find(it => it.id === catalogHistory[draggedIndex].id);
+                      if (!draggedItemInFull) return;
+
                       if (lotKey === "GENERAL") {
-                        draggedItem.lotNumber = undefined;
-                        draggedItem.lotTitle = undefined;
+                        draggedItemInFull.lotNumber = undefined;
+                        draggedItemInFull.lotTitle = undefined;
                       } else {
-                        draggedItem.lotNumber = lot.number;
-                        draggedItem.lotTitle = lot.title;
+                        draggedItemInFull.lotNumber = lot.number;
+                        draggedItemInFull.lotTitle = lot.title;
                       }
 
-                      // Reposition inside list: Find the index of the first item of this lot, or put it at the end/beginning
+                      // Reposition inside list: Find the index of the dragged item and target lot items
+                      const origIndex = list.findIndex(it => it.id === draggedItemInFull.id);
+                      if (origIndex !== -1) {
+                        list.splice(origIndex, 1);
+                      }
+
                       let firstItemOfLotIdx = list.findIndex((item) => {
                         if (lotKey === "GENERAL") {
                           return !item.lotNumber;
@@ -318,14 +471,10 @@ export default function HistorySidebar({
                         return item.lotNumber?.trim().toUpperCase() === lotKey;
                       });
 
-                      list.splice(draggedIndex, 1);
                       if (firstItemOfLotIdx === -1) {
-                        list.push(draggedItem);
+                        list.push(draggedItemInFull);
                       } else {
-                        if (draggedIndex < firstItemOfLotIdx) {
-                          firstItemOfLotIdx--;
-                        }
-                        list.splice(firstItemOfLotIdx, 0, draggedItem);
+                        list.splice(firstItemOfLotIdx, 0, draggedItemInFull);
                       }
 
                       updateHistory(list);
@@ -369,26 +518,16 @@ export default function HistorySidebar({
                           <div
                             onClick={(e) => {
                               e.stopPropagation();
-                              if (!item.lotNumber) {
-                                toggleItemSelection(item.id);
-                              }
+                              toggleItemSelection(item.id);
                             }}
-                            className={`px-1 flex items-center justify-center shrink-0 relative z-10 ${
-                              item.lotNumber ? "cursor-not-allowed opacity-30" : "cursor-pointer"
-                            }`}
-                            title={
-                              item.lotNumber
-                                ? "This item is already assigned to a Group Lot and cannot be broken down or re-allocated"
-                                : "Mark for Lot Grouping"
-                            }
+                            className="px-1 flex items-center justify-center shrink-0 relative z-10 cursor-pointer"
+                            title="Select for bulk action"
                           >
                             <div
                               className={`w-3 h-3 rounded-xs border flex items-center justify-center transition-all duration-200 ${
                                 selectedItemIds.includes(item.id)
                                   ? "bg-rosebery-primary border-rosebery-primary text-white"
-                                  : item.lotNumber
-                                    ? "border-stone-200 bg-stone-50"
-                                    : "border-stone-300 hover:border-rosebery-primary bg-rosebery-card"
+                                  : "border-stone-300 hover:border-rosebery-primary bg-rosebery-card"
                               }`}
                             >
                               {selectedItemIds.includes(item.id) && <Check className="w-2 h-2 stroke-[3]" />}

@@ -511,7 +511,6 @@ export class ConfigurableClaudeAppraiser implements AppraisalMethod {
       body: JSON.stringify({
         model: this.config.modelName,
         max_tokens: 4096,
-        temperature: this.config.temperature,
         messages: [
           {
             role: "user",

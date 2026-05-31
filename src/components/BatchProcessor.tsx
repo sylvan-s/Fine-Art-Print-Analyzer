@@ -1,9 +1,11 @@
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, useMemo } from "react";
 import { 
   FolderOpen, 
   Play, 
   Loader2, 
-  Scissors
+  Scissors,
+  Database,
+  AlertCircle
 } from "lucide-react";
 import { PrintAnalysisReport, AnalysisHistoryItem, CatalogMetadata } from "../types";
 
@@ -68,6 +70,9 @@ interface BatchFile {
   lotNumber?: string;
   lotTitle?: string;
   artworks?: ProcessedArtwork[];
+  thumbnailUrl?: string;
+  timestamp?: string;
+  methodUsed?: string;
 }
 
 const isModelUnavailableError = (errorMsg: string): boolean => {
@@ -87,6 +92,20 @@ const isModelUnavailableError = (errorMsg: string): boolean => {
     msg.includes("fetch failed") ||
     msg.includes("model is overloaded")
   );
+};
+
+// Helper: Extract original filename prefix
+const extractOriginalFilename = (fileName: string): string => {
+  if (!fileName) return "";
+  const primaryIdx = fileName.indexOf("_Primary_Artwork");
+  if (primaryIdx !== -1) {
+    return fileName.substring(0, primaryIdx);
+  }
+  const artworkIdx = fileName.indexOf("_Artwork_");
+  if (artworkIdx !== -1) {
+    return fileName.substring(0, artworkIdx);
+  }
+  return fileName;
 };
 
 interface ProcessedArtwork {
@@ -114,13 +133,66 @@ export default function BatchProcessor({
   const [isProcessing, setIsProcessing] = useState(false);
   const [currentFileIndex, setCurrentFileIndex] = useState<number>(-1);
   const [currentArtworks, setCurrentArtworks] = useState<ProcessedArtwork[]>([]);
+  const currentArtworksRef = useRef<ProcessedArtwork[]>([]);
+
+  const updateCurrentArtworks = (artworks: ProcessedArtwork[]) => {
+    currentArtworksRef.current = artworks;
+    setCurrentArtworks(artworks);
+  };
   const [logs, setLogs] = useState<string[]>([]);
   const [selectedFolderName, setSelectedFolderName] = useState<string>("");
+  const [selectedFileIds, setSelectedFileIds] = useState<string[]>([]);
+  const [filterDate, setFilterDate] = useState<string>("");
+  const [filterStatus, setFilterStatus] = useState<string>("all");
+
+  const currentFriendlyMethod = useMemo(() => {
+    const selectedMethodConfig = appraisalMethods.find(m => m.id === appraisalMethod);
+    return selectedMethodConfig 
+      ? `${selectedMethodConfig.promptKey.charAt(0).toUpperCase() + selectedMethodConfig.promptKey.slice(1)} - ${selectedMethodConfig.modelName}`
+      : appraisalMethod;
+  }, [appraisalMethod, appraisalMethods]);
+
+  const createBatchFileForHistoricalRow = (rowName: string, rowThumbnail: string, rowTimestamp: string): BatchFile => {
+    const selectedMethodConfig = appraisalMethods.find(m => m.id === appraisalMethod);
+    const friendlyMethod = selectedMethodConfig 
+      ? `${selectedMethodConfig.promptKey.charAt(0).toUpperCase() + selectedMethodConfig.promptKey.slice(1)} - ${selectedMethodConfig.modelName}`
+      : appraisalMethod;
+
+    const originalItemsForGroup = itemDatabaseRef.current.filter(
+      item => extractOriginalFilename(item.imageFileName).toLowerCase() === rowName.toLowerCase()
+    );
+
+    return {
+      id: crypto.randomUUID(),
+      name: rowName,
+      sourceType: "upload",
+      status: "pending",
+      thumbnailUrl: rowThumbnail,
+      timestamp: rowTimestamp,
+      methodUsed: friendlyMethod,
+      artworks: originalItemsForGroup.map(item => {
+        const artworkIdx = item.imageFileName.indexOf("_Artwork_");
+        const primaryIdx = item.imageFileName.indexOf("_Primary_Artwork");
+        let label = "Primary Artwork";
+        if (artworkIdx !== -1) {
+          label = item.imageFileName.substring(artworkIdx + 9).replace(".jpg", "").replace(/_/g, " ");
+        } else if (primaryIdx !== -1) {
+          label = "Primary Artwork";
+        }
+        return {
+          label,
+          imagePreview: item.imageUrl,
+          status: "pending"
+        };
+      })
+    };
+  };
 
   const batchFilesRef = useRef(batchFiles);
   batchFilesRef.current = batchFiles;
   
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const processingRef = useRef(false);
 
   const addLog = (message: string) => {
     setLogs((prev) => [`[${new Date().toLocaleTimeString()}] ${message}`, ...prev]);
@@ -149,7 +221,15 @@ export default function BatchProcessor({
           (item) => {
             const dbName = item.imageFileName.toLowerCase();
             const currName = file.name.toLowerCase();
-            return dbName === currName || dbName.startsWith(currName + "_");
+            const matchesFile = dbName === currName || dbName.startsWith(currName + "_");
+            if (!matchesFile) return false;
+
+            const approach = item.report.promptVersion || "standard";
+            const formattedApproach = approach.charAt(0).toUpperCase() + approach.slice(1);
+            const model = item.report.modelUsed || "gemini-2.5-flash";
+            const itemMethod = `${formattedApproach} - ${model}`;
+
+            return itemMethod === currentFriendlyMethod;
           }
         );
         return {
@@ -157,10 +237,22 @@ export default function BatchProcessor({
           name: file.name,
           sourceType: "upload" as const,
           fileObject: file,
-          status: (isAlreadyAppraised ? "already_appraised" : "pending") as BatchFile["status"]
+          status: (isAlreadyAppraised ? "already_appraised" : "pending") as BatchFile["status"],
+          thumbnailUrl: URL.createObjectURL(file),
+          timestamp: new Date().toLocaleDateString("en-US", {
+            month: "short",
+            day: "numeric",
+            year: "numeric",
+            hour: "2-digit",
+            minute: "2-digit",
+          }),
+          methodUsed: currentFriendlyMethod
         };
       });
       setBatchFiles((prev) => [...prev, ...newFiles]);
+      // Auto-select newly added files that are pending
+      const newPendingIds = newFiles.filter(f => f.status === "pending").map(f => f.id);
+      setSelectedFileIds((prev) => [...prev, ...newPendingIds]);
       const alreadyAppraisedCount = newFiles.filter(f => f.status === "already_appraised").length;
       addLog(`Selected browser directory. Found ${imageList.length} images. (${alreadyAppraisedCount} already appraised)`);
     } else {
@@ -173,9 +265,10 @@ export default function BatchProcessor({
     setBatchFiles([]);
     setIsProcessing(false);
     setCurrentFileIndex(-1);
-    setCurrentArtworks([]);
+    updateCurrentArtworks([]);
     setLogs([]);
     setSelectedFolderName("");
+    setSelectedFileIds([]);
     addLog("Batch queue cleared.");
   };
 
@@ -235,29 +328,97 @@ export default function BatchProcessor({
 
   // Core Processing Orchestrator
   const startProcessing = async () => {
+    if (processingRef.current) return;
     if (batchFiles.length === 0) return;
 
+    processingRef.current = true;
     setIsProcessing(true);
-    addLog("Batch processing queue initialized.");
 
-    let targetHistory = [...itemDatabaseRef.current];
+    try {
+      const selectedMethodConfig = appraisalMethods.find(m => m.id === appraisalMethod);
+      const currentFriendlyMethod = selectedMethodConfig 
+        ? `${selectedMethodConfig.promptKey.charAt(0).toUpperCase() + selectedMethodConfig.promptKey.slice(1)} - ${selectedMethodConfig.modelName}`
+        : appraisalMethod;
 
-    // Loop sequentially
-    for (let i = 0; i < batchFiles.length; i++) {
-      const file = batchFiles[i];
-      if (file.status === "completed" || file.status === "already_appraised") {
-        if (file.status === "already_appraised") {
-          addLog(`Skipping already appraised file: ${file.name}`);
+      // Reset status/artworks to pending for selected files that don't match the current friendly method, or are already completed/failed
+      let filesToUpdate = false;
+      const updatedFiles = batchFiles.map(file => {
+        if (selectedFileIds.includes(file.id)) {
+          if (file.methodUsed !== currentFriendlyMethod || (file.status !== "completed" && file.status !== "already_appraised")) {
+            filesToUpdate = true;
+            return {
+              ...file,
+              status: "pending" as const,
+              methodUsed: currentFriendlyMethod,
+              error: undefined,
+              artworks: file.artworks ? file.artworks.map(art => ({
+                ...art,
+                status: "pending" as const,
+                error: undefined,
+                report: undefined
+              })) : undefined
+            };
+          }
         }
-        continue;
+        return file;
+      });
+
+      let targetBatchFiles = batchFiles;
+      if (filesToUpdate) {
+        setBatchFiles(updatedFiles);
+        targetBatchFiles = updatedFiles;
+        // Wait for state to apply
+        await new Promise(resolve => setTimeout(resolve, 0));
       }
+
+      // Filter to selected files that are pending
+      const selectedFiles = targetBatchFiles.filter(
+        (f) => selectedFileIds.includes(f.id) && f.status === "pending"
+      );
+
+      if (selectedFiles.length === 0) {
+        addLog("No pending files selected for appraisal.");
+        processingRef.current = false;
+        setIsProcessing(false);
+        return;
+      }
+
+      addLog(`Batch processing queue initialized for ${selectedFiles.length} selected files.`);
+
+      let targetHistory = [...itemDatabaseRef.current];
+
+      // Loop sequentially over selected files
+      for (let i = 0; i < selectedFiles.length; i++) {
+        const targetFile = selectedFiles[i];
+        const file = batchFilesRef.current.find(f => f.id === targetFile.id) || targetFile;
+
+        const isProcessable = file.status === "pending" || file.status === "failed" || file.status === "detecting" || file.status === "splitting" || file.status === "appraising";
+
+        if (!isProcessable) {
+          continue;
+        }
+
+        if (file.status === "completed" || file.status === "already_appraised") {
+          if (file.status === "already_appraised") {
+            addLog(`Skipping already appraised file: ${file.name}`);
+          }
+          continue;
+        }
 
       // Dynamic check against the latest updated database history
       const dynamicallyAlreadyAppraised = targetHistory.some(
         (item) => {
           const dbName = item.imageFileName.toLowerCase();
           const currName = file.name.toLowerCase();
-          return dbName === currName || dbName.startsWith(currName + "_");
+          const matchesFile = dbName === currName || dbName.startsWith(currName + "_");
+          if (!matchesFile) return false;
+
+          const approach = item.report.promptVersion || "standard";
+          const formattedApproach = approach.charAt(0).toUpperCase() + approach.slice(1);
+          const model = item.report.modelUsed || "gemini-2.5-flash";
+          const itemMethod = `${formattedApproach} - ${model}`;
+
+          return itemMethod === currentFriendlyMethod;
         }
       );
 
@@ -269,81 +430,90 @@ export default function BatchProcessor({
 
       setCurrentFileIndex(i);
       updateFileStatus(file.id, "detecting");
-      addLog(`Processing file [${i + 1}/${batchFiles.length}]: ${file.name}`);
+      addLog(`Processing file [${i + 1}/${batchFilesRef.current.length}]: ${file.name}`);
 
       try {
-        // Step A: Retrieve Base64 data of image
-        let imageBase64 = "";
-        let mimeType = "image/jpeg";
-
-        if (file.sourceType === "upload" && file.fileObject) {
-          imageBase64 = await fileToBase64(file.fileObject);
-          mimeType = file.fileObject.type;
-        } else if (file.sourceType === "local" && file.localPath) {
-          addLog("Retrieving file payload from server...");
-          const res = await fetch("/api/get-local-file", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ filePath: file.localPath })
-          });
-          if (!res.ok) throw new Error(`Failed to load server file: ${res.status}`);
-          const fileData = await res.json();
-          imageBase64 = fileData.base64;
-          mimeType = fileData.mimeType;
-        } else {
-          throw new Error("Missing source file content references.");
-        }
-
-        // Step B: Ask Gemini to detect multiple artworks (Collage Check)
-        addLog("Detecting print bounds and checking for multi-artwork collages...");
-        const detectRes = await fetch("/api/detect-artworks", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ imageBase64, mimeType })
-        });
-        if (!detectRes.ok) {
-          const errData = await detectRes.json().catch(() => ({}));
-          throw new Error(errData.error || `Collage detection returned error status ${detectRes.status}`);
-        }
-        const detection = await detectRes.json();
-
         let splitArtworks: ProcessedArtwork[] = [];
         
         // Define shared Lot identifiers for grouping
         const randomCode = Math.random().toString(36).substring(2, 6).toUpperCase();
         const cleanName = file.name.substring(0, 8).replace(/[^a-zA-Z0-9]/g, "");
-        const sharedLotNumber = `Lot B-${cleanName}-${randomCode}`;
-        const sharedLotTitle = `Split Group Lot: ${file.name}`;
+        const sharedLotNumber = file.lotNumber || `Lot B-${cleanName}-${randomCode}`;
+        const sharedLotTitle = file.lotTitle || `Split Group Lot: ${file.name}`;
 
-        if (detection.containsMultipleArtworks && detection.artworks.length > 1) {
-          // Multiple pieces detected! Slicing...
-          updateFileStatus(file.id, "splitting");
-          addLog(`✂️ Collage Detected! Splitting scan sheet into ${detection.artworks.length} distinct print cropped scans.`);
-
-          for (let j = 0; j < detection.artworks.length; j++) {
-            const art = detection.artworks[j];
-            try {
-              addLog(`Slicing cropped artwork bounds for: ${art.label}...`);
-              const croppedBase64 = await cropImageCanvas(imageBase64, art.box_2d);
-              splitArtworks.push({
-                label: art.label,
-                imagePreview: croppedBase64,
-                status: "pending"
-              });
-            } catch (cropErr: any) {
-              addLog(`Failed to slice crop bounds for ${art.label}: ${cropErr.message}`);
-            }
-          }
-        } else {
-          // Single piece detected. Proceed with original image bounds.
-          splitArtworks.push({
-            label: "Primary Artwork",
-            imagePreview: imageBase64,
+        if (file.artworks && file.artworks.length > 0 && !file.fileObject && !file.localPath) {
+          // Historical item re-appraisal - bypass detection/splitting and use existing artworks
+          addLog(`Using existing ${file.artworks.length} cropped artwork(s) from historical record for re-appraisal.`);
+          splitArtworks = file.artworks.map(art => ({
+            ...art,
             status: "pending"
+          }));
+        } else {
+          // Step A: Retrieve Base64 data of image
+          let imageBase64 = "";
+          let mimeType = "image/jpeg";
+
+          if (file.sourceType === "upload" && file.fileObject) {
+            imageBase64 = await fileToBase64(file.fileObject);
+            mimeType = file.fileObject.type;
+          } else if (file.sourceType === "local" && file.localPath) {
+            addLog("Retrieving file payload from server...");
+            const res = await fetch("/api/get-local-file", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ filePath: file.localPath })
+            });
+            if (!res.ok) throw new Error(`Failed to load server file: ${res.status}`);
+            const fileData = await res.json();
+            imageBase64 = fileData.base64;
+            mimeType = fileData.mimeType;
+          } else {
+            throw new Error("Missing source file content references.");
+          }
+
+          // Step B: Ask Gemini to detect multiple artworks (Collage Check)
+          addLog("Detecting print bounds and checking for multi-artwork collages...");
+          const detectRes = await fetch("/api/detect-artworks", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ imageBase64, mimeType })
           });
+          if (!detectRes.ok) {
+            const errData = await detectRes.json().catch(() => ({}));
+            throw new Error(errData.error || `Collage detection returned error status ${detectRes.status}`);
+          }
+          const detection = await detectRes.json();
+
+          if (detection.containsMultipleArtworks && detection.artworks.length > 1) {
+            // Multiple pieces detected! Slicing...
+            updateFileStatus(file.id, "splitting");
+            addLog(`✂️ Collage Detected! Splitting scan sheet into ${detection.artworks.length} distinct print cropped scans.`);
+
+            for (let j = 0; j < detection.artworks.length; j++) {
+              const art = detection.artworks[j];
+              try {
+                addLog(`Slicing cropped artwork bounds for: ${art.label}...`);
+                const croppedBase64 = await cropImageCanvas(imageBase64, art.box_2d);
+                splitArtworks.push({
+                  label: art.label,
+                  imagePreview: croppedBase64,
+                  status: "pending"
+                });
+              } catch (cropErr: any) {
+                addLog(`Failed to slice crop bounds for ${art.label}: ${cropErr.message}`);
+              }
+            }
+          } else {
+            // Single piece detected. Proceed with original image bounds.
+            splitArtworks.push({
+              label: "Primary Artwork",
+              imagePreview: imageBase64,
+              status: "pending"
+            });
+          }
         }
 
-        setCurrentArtworks(splitArtworks);
+        updateCurrentArtworks(splitArtworks);
         setBatchFiles((prev) => prev.map((f) => f.id === file.id ? { 
           ...f, 
           splitItemsCount: splitArtworks.length,
@@ -439,6 +609,7 @@ export default function BatchProcessor({
 
     // --- RETRY CYCLE FOR MODEL UNAVAILABILITY ---
     let unavailableFiles = batchFilesRef.current.filter(file => {
+      if (!selectedFileIds.includes(file.id)) return false;
       if (file.status !== "failed") return false;
       if (file.error && isModelUnavailableError(file.error)) return true;
       if (file.artworks && file.artworks.some(art => art.status === "failed" && art.error && isModelUnavailableError(art.error))) {
@@ -457,6 +628,7 @@ export default function BatchProcessor({
         
         // Re-read latest state of unavailable files
         unavailableFiles = batchFilesRef.current.filter(file => {
+          if (!selectedFileIds.includes(file.id)) return false;
           if (file.status !== "failed") return false;
           if (file.error && isModelUnavailableError(file.error)) return true;
           if (file.artworks && file.artworks.some(art => art.status === "failed" && art.error && isModelUnavailableError(art.error))) {
@@ -536,7 +708,7 @@ export default function BatchProcessor({
                 });
               }
 
-              setCurrentArtworks(splitArtworks);
+              updateCurrentArtworks(splitArtworks);
               setBatchFiles((prev) => prev.map((f) => f.id === file.id ? { 
                 ...f, 
                 splitItemsCount: splitArtworks.length,
@@ -552,6 +724,7 @@ export default function BatchProcessor({
             // Case B: Process any pending/failed artworks
             const updatedFile = batchFilesRef.current.find(f => f.id === file.id)!;
             const artworksToProcess = updatedFile.artworks || [];
+            updateCurrentArtworks(artworksToProcess);
             
             updateFileStatus(updatedFile.id, "appraising");
             const appHistoryItems: AnalysisHistoryItem[] = [];
@@ -630,9 +803,18 @@ export default function BatchProcessor({
         }
       }
     }
-
-    setIsProcessing(false);
-    addLog("Batch processing queue finished.");
+    } catch (globalErr: any) {
+      console.error("Global batch execution error:", globalErr);
+      addLog(`❌ Global batch appraisal error: ${globalErr.message}`);
+    } finally {
+      processingRef.current = false;
+      setIsProcessing(false);
+      setSelectedFileIds(prev => prev.filter(id => {
+        const file = batchFilesRef.current.find(f => f.id === id);
+        return file ? file.status !== "completed" : true;
+      }));
+      addLog("Batch processing queue finished.");
+    }
   };
 
   const updateFileStatus = (
@@ -652,9 +834,10 @@ export default function BatchProcessor({
     report?: PrintAnalysisReport,
     error?: string
   ) => {
-    setCurrentArtworks((prev) =>
-      prev.map((a, idx) => (idx === index ? { ...a, status, report, error } : a))
-    );
+    const updated = currentArtworksRef.current.map((a, idx) => (idx === index ? { ...a, status, report, error } : a));
+    currentArtworksRef.current = updated;
+    setCurrentArtworks(updated);
+
     setBatchFiles((prev) =>
       prev.map((f) =>
         f.id === fileId
@@ -671,6 +854,264 @@ export default function BatchProcessor({
     );
   };
 
+
+
+  // Merge historical items and batchFiles into a unified list, grouped by original filename
+  const unifiedRegistry = useMemo(() => {
+    const groups: Record<string, {
+      id: string;
+      name: string;
+      thumbnailUrl: string;
+      timestamp: string;
+      methods: Set<string>;
+      statuses: Set<string>;
+      errors: string[];
+      isHistorical: boolean;
+      originalItems: AnalysisHistoryItem[];
+      batchFiles: BatchFile[];
+    }> = {};
+
+    // 1. Group historical items
+    itemDatabase.forEach((item) => {
+      const origName = extractOriginalFilename(item.imageFileName);
+      const key = origName.toLowerCase();
+      
+      const approach = item.report.promptVersion || "standard";
+      const formattedApproach = approach.charAt(0).toUpperCase() + approach.slice(1);
+      const model = item.report.modelUsed || "gemini-2.5-flash";
+      const methodStr = `${formattedApproach} - ${model}`;
+
+      if (!groups[key]) {
+        groups[key] = {
+          id: item.id,
+          name: origName,
+          thumbnailUrl: item.imageUrl,
+          timestamp: item.timestamp,
+          methods: new Set([methodStr]),
+          statuses: new Set(["appraised"]),
+          errors: [],
+          isHistorical: true,
+          originalItems: [item],
+          batchFiles: [],
+        };
+      } else {
+        groups[key].methods.add(methodStr);
+        groups[key].originalItems.push(item);
+        try {
+          if (new Date(item.timestamp) > new Date(groups[key].timestamp)) {
+            groups[key].timestamp = item.timestamp;
+          }
+        } catch {
+          // ignore
+        }
+      }
+    });
+
+    // 2. Group batchFiles
+    batchFiles.forEach((file) => {
+      const key = file.name.toLowerCase();
+
+      let displayStatus: "new" | "failed" | "processing" | "appraised" = "new";
+      if (file.status === "completed" || file.status === "already_appraised") {
+        displayStatus = "appraised";
+      } else if (file.status === "failed") {
+        displayStatus = "failed";
+      } else if (file.status === "detecting" || file.status === "splitting" || file.status === "appraising") {
+        displayStatus = "processing";
+      }
+
+      if (!groups[key]) {
+        groups[key] = {
+          id: file.id,
+          name: file.name,
+          thumbnailUrl: file.thumbnailUrl || "",
+          timestamp: file.timestamp || new Date().toLocaleDateString("en-US", {
+            month: "short",
+            day: "numeric",
+            year: "numeric",
+            hour: "2-digit",
+            minute: "2-digit",
+          }),
+          methods: new Set(file.methodUsed ? [file.methodUsed] : []),
+          statuses: new Set([displayStatus]),
+          errors: file.error ? [file.error] : [],
+          isHistorical: false,
+          originalItems: [],
+          batchFiles: [file],
+        };
+      } else {
+        if (file.methodUsed) {
+          groups[key].methods.add(file.methodUsed);
+        }
+        groups[key].statuses.add(displayStatus);
+        if (file.error) {
+          groups[key].errors.push(file.error);
+        }
+        groups[key].batchFiles.push(file);
+        
+        if (displayStatus !== "appraised") {
+          groups[key].isHistorical = false;
+        }
+        if (!groups[key].thumbnailUrl && file.thumbnailUrl) {
+          groups[key].thumbnailUrl = file.thumbnailUrl;
+        }
+      }
+    });
+
+    // Convert to row objects
+    return Object.values(groups).map((g) => {
+      const methodMap: Record<string, { status: "new" | "failed" | "processing" | "appraised"; error?: string }> = {};
+
+      // 1. First, populate from original (appraised) items in database
+      g.originalItems.forEach(item => {
+        const approach = item.report.promptVersion || "standard";
+        const formattedApproach = approach.charAt(0).toUpperCase() + approach.slice(1);
+        const model = item.report.modelUsed || "gemini-2.5-flash";
+        const methodStr = `${formattedApproach} - ${model}`;
+        methodMap[methodStr] = { status: "appraised" };
+      });
+
+      // 2. Next, overlay active batchFiles in memory
+      g.batchFiles.forEach(file => {
+        if (file.methodUsed) {
+          let displayStatus: "new" | "failed" | "processing" | "appraised" = "new";
+          if (file.status === "completed" || file.status === "already_appraised") {
+            displayStatus = "appraised";
+          } else if (file.status === "failed") {
+            displayStatus = "failed";
+          } else if (file.status === "detecting" || file.status === "splitting" || file.status === "appraising") {
+            displayStatus = "processing";
+          }
+          
+          if (methodMap[file.methodUsed] && methodMap[file.methodUsed].status === "appraised") {
+            // Keep successfully appraised status
+          } else {
+            methodMap[file.methodUsed] = { 
+              status: displayStatus, 
+              error: file.error 
+            };
+          }
+        }
+      });
+
+      if (Object.keys(methodMap).length === 0) {
+        methodMap[currentFriendlyMethod] = { status: "new" };
+      }
+
+      const methodsWithStatus = Object.entries(methodMap).map(([method, details]) => ({
+        method,
+        status: details.status,
+        error: details.error
+      }));
+
+      let finalStatus: "new" | "failed" | "processing" | "appraised" = "appraised";
+      const statuses = new Set(methodsWithStatus.map(m => m.status));
+      if (statuses.has("processing")) {
+        finalStatus = "processing";
+      } else if (statuses.has("new")) {
+        finalStatus = "new";
+      } else if (statuses.has("failed")) {
+        finalStatus = "failed";
+      }
+
+      return {
+        id: g.id,
+        name: g.name,
+        thumbnailUrl: g.thumbnailUrl,
+        timestamp: g.timestamp,
+        methodUsed: methodsWithStatus.map(m => m.method).join(", "),
+        methodsList: methodsWithStatus.map(m => m.method),
+        methodsWithStatus,
+        status: finalStatus,
+        isHistorical: g.isHistorical && !g.batchFiles.some(f => f.status !== "completed" && f.status !== "already_appraised"),
+        error: g.errors.join("; "),
+        originalFileIds: g.batchFiles.map(f => f.id),
+      };
+    });
+  }, [itemDatabase, batchFiles, currentFriendlyMethod]);
+
+  const filteredRegistry = useMemo(() => {
+    return unifiedRegistry.filter((row) => {
+      // 1. Status Filter
+      if (filterStatus !== "all") {
+        if (filterStatus === "new" && row.status !== "new" && row.status !== "processing") {
+          return false;
+        }
+        if (filterStatus === "appraised" && row.status !== "appraised") {
+          return false;
+        }
+        if (filterStatus === "failed" && row.status !== "failed") {
+          return false;
+        }
+      }
+
+      // 2. Date Filter
+      if (filterDate !== "") {
+        try {
+          const filterD = new Date(filterDate);
+          const itemD = new Date(row.timestamp);
+          const match =
+            filterD.getFullYear() === itemD.getFullYear() &&
+            filterD.getMonth() === itemD.getMonth() &&
+            filterD.getDate() === itemD.getDate();
+          if (!match) return false;
+        } catch {
+          // ignore
+        }
+      }
+
+      return true;
+    });
+  }, [unifiedRegistry, filterStatus, filterDate]);
+
+  const visibleSelectableRows = useMemo(() => {
+    return filteredRegistry.filter(row => {
+      const currentMethodDetail = row.methodsWithStatus.find(m => m.method === currentFriendlyMethod);
+      const currentMethodStatus = currentMethodDetail ? currentMethodDetail.status : "new";
+      return currentMethodStatus !== "appraised";
+    });
+  }, [filteredRegistry, currentFriendlyMethod]);
+
+  const isAllVisibleSelected = useMemo(() => {
+    return visibleSelectableRows.length > 0 && visibleSelectableRows.every(row => 
+      row.originalFileIds.length > 0 && row.originalFileIds.every(id => selectedFileIds.includes(id))
+    );
+  }, [visibleSelectableRows, selectedFileIds]);
+
+  const toggleSelectAll = () => {
+    if (isAllVisibleSelected) {
+      const idsToRemove = visibleSelectableRows.flatMap(r => r.originalFileIds);
+      setSelectedFileIds(prev => prev.filter(id => !idsToRemove.includes(id)));
+    } else {
+      const newBatchFiles: BatchFile[] = [];
+      const idsToAdd: string[] = [];
+
+      visibleSelectableRows.forEach(row => {
+        if (row.originalFileIds.length === 0) {
+          const newFile = createBatchFileForHistoricalRow(row.name, row.thumbnailUrl, row.timestamp);
+          newBatchFiles.push(newFile);
+          idsToAdd.push(newFile.id);
+        } else {
+          row.originalFileIds.forEach(id => {
+            idsToAdd.push(id);
+          });
+        }
+      });
+
+      if (newBatchFiles.length > 0) {
+        setBatchFiles(prev => [...prev, ...newBatchFiles]);
+      }
+
+      setSelectedFileIds(prev => {
+        const next = [...prev];
+        idsToAdd.forEach(id => {
+          if (!next.includes(id)) next.push(id);
+        });
+        return next;
+      });
+    }
+  };
+
   return (
     <div className="space-y-8 animate-fadeIn text-rosebery-text-normal">
       {/* Introduction */}
@@ -685,7 +1126,7 @@ export default function BatchProcessor({
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
         {/* Left Console: Inputs & Queue */}
-        <div className="lg:col-span-7 space-y-6">
+        <div className="lg:col-span-5 space-y-6">
           <div className="bg-white border border-rosebery-border rounded-xl p-6 shadow-gallery-soft space-y-6">
             <h3 className="text-base font-serif font-semibold text-rosebery-charcoal flex items-center gap-2 border-b border-rosebery-border pb-3">
               <FolderOpen className="w-5 h-5 text-rosebery-primary" />
@@ -704,11 +1145,14 @@ export default function BatchProcessor({
                 className="w-full bg-white border border-rosebery-border focus:border-rosebery-primary focus:ring-1 focus:ring-rosebery-primary/20 rounded-sm p-2.5 text-xs text-rosebery-charcoal outline-hidden font-mono transition-all duration-200 cursor-pointer"
                 disabled={isProcessing}
               >
-                {appraisalMethods.map((method) => (
-                  <option key={method.id} value={method.id}>
-                    {method.name} ({method.modelName})
-                  </option>
-                ))}
+                {appraisalMethods.map((method) => {
+                  const approach = method.promptKey.charAt(0).toUpperCase() + method.promptKey.slice(1);
+                  return (
+                    <option key={method.id} value={method.id}>
+                      {approach} - {method.modelName}
+                    </option>
+                  );
+                })}
               </select>
               {(() => {
                 const selectedMethod = appraisalMethods.find(m => m.id === appraisalMethod);
@@ -768,7 +1212,7 @@ export default function BatchProcessor({
             {batchFiles.length > 0 && (
               <div className="flex justify-between items-center bg-rosebery-cream-bg border border-rosebery-border p-3.5 rounded-lg">
                 <div className="text-xs text-rosebery-charcoal font-medium">
-                  Queue: <span className="font-mono font-bold text-rosebery-primary">{batchFiles.length} Scans Enqueued</span>
+                  Selected: <span className="font-mono font-bold text-rosebery-primary">{batchFiles.filter(f => selectedFileIds.includes(f.id)).length} of {batchFiles.length} Scans</span>
                 </div>
                 <div className="flex items-center gap-2">
                   <button
@@ -782,176 +1226,386 @@ export default function BatchProcessor({
                   <button
                     type="button"
                     onClick={startProcessing}
-                    disabled={isProcessing}
+                    disabled={isProcessing || batchFiles.filter(f => selectedFileIds.includes(f.id) && (f.status === "pending" || f.status === "failed")).length === 0}
                     className="bg-rosebery-primary hover:bg-rosebery-primary-hover disabled:bg-stone-300 text-white font-mono text-[10px] font-bold tracking-widest uppercase px-5 py-2 rounded-xs flex items-center gap-1.5 cursor-pointer transition-colors"
                   >
                     {isProcessing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
-                    Start Batch
+                    Appraise Selected
                   </button>
                 </div>
               </div>
             )}
           </div>
+        </div>
 
-          {/* Queue List */}
-          {batchFiles.length > 0 && (
-            <div className="bg-white border border-rosebery-border rounded-xl p-5 shadow-gallery-soft space-y-4 max-h-[380px] overflow-y-auto">
-              <span className="text-[10px] font-mono text-rosebery-primary uppercase tracking-widest font-bold block border-b border-rosebery-border pb-2">
-                Processing Queue List
-              </span>
-              <div className="space-y-2">
-                {batchFiles.map((file, idx) => (
-                  <div 
-                    key={file.id} 
-                    className={`flex items-center justify-between p-3 rounded-lg border text-xs transition-colors duration-200 ${
-                      idx === currentFileIndex 
-                        ? "border-rosebery-primary bg-rosebery-cream-bg/40 font-semibold"
-                        : file.status === "completed"
-                          ? "border-emerald-100 bg-emerald-50/40 text-emerald-900"
-                          : file.status === "failed"
-                            ? "border-rose-100 bg-rose-50/40 text-rose-900"
-                            : file.status === "already_appraised"
-                              ? "border-indigo-100 bg-indigo-50/20 text-indigo-900"
-                              : "border-stone-100 bg-stone-50/30 text-rosebery-muted"
-                    }`}
-                  >
-                    <div className="flex items-center gap-2.5 truncate max-w-[70%]">
-                      <span className="text-[10px] font-mono text-rosebery-muted">#{idx + 1}</span>
-                      <span className="truncate font-sans">{file.name}</span>
-                    </div>
+        {/* Right Console: Live Splitting & Real-time logs */}
+        <div className="lg:col-span-7">
+          {currentFileIndex >= 0 && currentArtworks.length > 0 ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
+              {/* Active Split Preview */}
+              <div className="bg-white border border-rosebery-border rounded-xl p-6 shadow-gallery-soft space-y-5 animate-fadeIn">
+                <h3 className="text-base font-serif font-semibold text-rosebery-charcoal flex items-center gap-2 border-b border-rosebery-border pb-3">
+                  <Scissors className="w-5 h-5 text-rosebery-primary" />
+                  Collage Split Preview
+                </h3>
 
-                    <div className="flex items-center gap-2">
-                      {/* Split tag */}
-                      {file.splitItemsCount && file.splitItemsCount > 1 && (
-                        <span className="bg-stone-100 text-rosebery-primary border border-rosebery-border text-[9px] font-mono font-bold px-1.5 py-0.5 rounded-xs flex items-center gap-0.5">
-                          <Scissors className="w-2.5 h-2.5" />
-                          Split x{file.splitItemsCount}
-                        </span>
-                      )}
-                      
-                      {/* Status indicator */}
-                      <span className={`text-[9px] font-mono font-bold uppercase tracking-wider px-2 py-0.5 rounded-full border ${
-                        file.status === "detecting" || file.status === "splitting" || file.status === "appraising"
-                          ? "bg-amber-50 border-amber-200 text-amber-800 animate-pulse"
-                          : file.status === "completed"
-                            ? "bg-emerald-50 border-emerald-200 text-emerald-800"
-                            : file.status === "failed"
-                              ? "bg-rose-50 border-rose-200 text-rose-800"
-                              : file.status === "already_appraised"
-                                ? "bg-indigo-50 border-indigo-200 text-indigo-800"
-                                : "bg-white border-stone-200 text-stone-400"
-                      }`}>
-                        {file.status === "already_appraised" ? "already appraised" : file.status}
-                      </span>
-                    </div>
+                <div className="bg-rosebery-cream-bg/30 border border-rosebery-border p-3.5 rounded-lg space-y-1 text-xs">
+                  <div className="flex justify-between font-mono text-[10px] text-rosebery-primary font-bold">
+                    <span>SOURCE FILE:</span>
+                    <span className="truncate max-w-[200px]">{batchFiles[currentFileIndex]?.name}</span>
                   </div>
-                ))}
+                  {batchFiles[currentFileIndex]?.lotNumber && (
+                    <div className="flex justify-between font-mono text-[10px] text-rosebery-muted pt-1">
+                      <span>SHARED GROUP LOT:</span>
+                      <span className="font-bold text-rosebery-charcoal">{batchFiles[currentFileIndex].lotNumber}</span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Grid of cropped works */}
+                <div className="grid grid-cols-2 gap-4">
+                  {currentArtworks.map((art, idx) => (
+                    <div key={idx} className="bg-stone-50 border border-rosebery-border p-3 rounded-lg flex flex-col space-y-2 shadow-xs relative overflow-hidden group">
+                      <div className="relative aspect-square rounded-sm overflow-hidden bg-white border border-rosebery-border flex items-center justify-center">
+                        <img src={art.imagePreview} alt={art.label} className="max-w-full max-h-full object-contain" />
+                      </div>
+                      
+                      <div className="space-y-1 text-center">
+                        <span className="text-[10px] font-mono text-rosebery-primary font-semibold block truncate">
+                          {art.label}
+                        </span>
+                        
+                        <span className={`text-[8.5px] font-mono uppercase tracking-wider font-bold px-1.5 py-0.5 rounded-full border inline-block ${
+                          art.status === "appraising"
+                            ? "bg-amber-50 border-amber-200 text-amber-800 animate-pulse"
+                            : art.status === "completed"
+                              ? "bg-emerald-50 border-emerald-200 text-emerald-800"
+                              : art.status === "failed"
+                                ? "bg-rose-50 border-rose-200 text-rose-800"
+                                : "bg-white border-stone-200 text-stone-400"
+                        }`}>
+                          {art.status}
+                        </span>
+                      </div>
+
+                      {art.report && (
+                        <div className="absolute inset-0 bg-[#4C0B2A]/90 text-white p-3 flex flex-col justify-between opacity-0 group-hover:opacity-100 transition-opacity duration-300 rounded-lg">
+                          <div className="space-y-1 text-[10px] leading-tight">
+                            <p className="font-serif font-bold truncate">{art.report.artworkTitle}</p>
+                            <p className="text-stone-300 font-sans truncate">{art.report.likelyArtist}</p>
+                            <p className="text-stone-300 font-sans font-semibold pt-1">{art.report.creationPeriod}</p>
+                          </div>
+                          <div className="bg-white text-rosebery-primary rounded-xs py-1 text-center text-[9px] font-mono font-bold">
+                            {art.report.auctionEstimate.formattedEstimate}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Real-time Logger Console */}
+              <div className="bg-rosebery-charcoal text-[#A8D39F] font-mono text-xs rounded-xl p-5 shadow-gallery-deep border border-stone-800 space-y-3.5 flex flex-col max-h-[380px]">
+                <div className="flex justify-between items-center border-b border-stone-800 pb-2.5">
+                  <span className="text-[10px] text-stone-400 uppercase tracking-widest font-bold font-sans">
+                    BATCH CONSOLE LOGS
+                  </span>
+                  <div className="flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                    <span className="text-[9px] text-stone-400 font-sans uppercase">Online</span>
+                  </div>
+                </div>
+                <div className="space-y-2 flex-1 min-h-[220px] overflow-y-auto flex flex-col-reverse text-[11px] leading-relaxed custom-scrollbar selection:bg-emerald-800 selection:text-white">
+                  {logs.length === 0 ? (
+                    <p className="text-stone-500 italic">No activity logged. Select folder source and start queue.</p>
+                  ) : (
+                    logs.map((log, idx) => (
+                      <p 
+                        key={idx} 
+                        className={
+                          log.includes("✓") || log.includes("Successfully")
+                            ? "text-emerald-400" 
+                            : log.includes("❌") || log.includes("Failed") || log.includes("Error")
+                              ? "text-rose-400 font-semibold"
+                              : log.includes("✂️")
+                                ? "text-amber-400"
+                                : "text-[#E3EAE0]"
+                        }
+                      >
+                        {log}
+                      </p>
+                    ))
+                  )}
+                </div>
+              </div>
+            </div>
+          ) : (
+            /* Real-time Logger Console (full width when no active preview, max-height limited) */
+            <div className="bg-rosebery-charcoal text-[#A8D39F] font-mono text-xs rounded-xl p-5 shadow-gallery-deep border border-stone-800 space-y-3.5 flex flex-col max-h-[280px]">
+              <div className="flex justify-between items-center border-b border-stone-800 pb-2.5">
+                <span className="text-[10px] text-stone-400 uppercase tracking-widest font-bold font-sans">
+                  BATCH CONSOLE LOGS
+                </span>
+                <div className="flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                  <span className="text-[9px] text-stone-400 font-sans uppercase">Online</span>
+                </div>
+              </div>
+              <div className="space-y-2 flex-1 min-h-[180px] overflow-y-auto flex flex-col-reverse text-[11px] leading-relaxed custom-scrollbar selection:bg-emerald-800 selection:text-white">
+                {logs.length === 0 ? (
+                  <p className="text-stone-500 italic">No activity logged. Select folder source and start queue.</p>
+                ) : (
+                  logs.map((log, idx) => (
+                    <p 
+                      key={idx} 
+                      className={
+                        log.includes("✓") || log.includes("Successfully")
+                          ? "text-emerald-400" 
+                          : log.includes("❌") || log.includes("Failed") || log.includes("Error")
+                            ? "text-rose-400 font-semibold"
+                            : log.includes("✂️")
+                              ? "text-amber-400"
+                              : "text-[#E3EAE0]"
+                      }
+                    >
+                      {log}
+                    </p>
+                  ))
+                )}
               </div>
             </div>
           )}
         </div>
+      </div>
 
-        {/* Right Console: Live Splitting & Real-time logs */}
-        <div className="lg:col-span-5 flex flex-col space-y-6">
-          {/* Active Split Preview */}
-          {currentFileIndex >= 0 && currentArtworks.length > 0 && (
-            <div className="bg-white border border-rosebery-border rounded-xl p-6 shadow-gallery-soft space-y-5 animate-fadeIn">
-              <h3 className="text-base font-serif font-semibold text-rosebery-charcoal flex items-center gap-2 border-b border-rosebery-border pb-3">
-                <Scissors className="w-5 h-5 text-rosebery-primary" />
-                Collage Split Preview
-              </h3>
+      {/* Appraisal & Upload Registry Card */}
+      <div className="bg-white border border-rosebery-border rounded-xl p-6 shadow-gallery-soft space-y-6 animate-fadeIn">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between border-b border-rosebery-border pb-4 gap-4">
+          <div>
+            <h3 className="text-lg font-serif font-semibold text-rosebery-charcoal flex items-center gap-2">
+              <Database className="w-5 h-5 text-rosebery-primary" />
+              Appraisal & Upload Registry
+            </h3>
+            <p className="text-xs text-rosebery-muted mt-1">
+              Showing both saved historical appraised print records and active batch uploads.
+            </p>
+          </div>
 
-              <div className="bg-rosebery-cream-bg/30 border border-rosebery-border p-3.5 rounded-lg space-y-1 text-xs">
-                <div className="flex justify-between font-mono text-[10px] text-rosebery-primary font-bold">
-                  <span>SOURCE FILE:</span>
-                  <span className="truncate max-w-[200px]">{batchFiles[currentFileIndex]?.name}</span>
-                </div>
-                {batchFiles[currentFileIndex]?.lotNumber && (
-                  <div className="flex justify-between font-mono text-[10px] text-rosebery-muted pt-1">
-                    <span>SHARED GROUP LOT:</span>
-                    <span className="font-bold text-rosebery-charcoal">{batchFiles[currentFileIndex].lotNumber}</span>
-                  </div>
-                )}
-              </div>
+          <div className="flex items-center gap-3">
+            {selectedFileIds.length > 0 && (
+              <button
+                type="button"
+                onClick={startProcessing}
+                disabled={isProcessing || visibleSelectableRows.filter(row => row.originalFileIds.length > 0 && row.originalFileIds.every(id => selectedFileIds.includes(id))).length === 0}
+                className="bg-rosebery-primary hover:bg-rosebery-primary-hover disabled:bg-stone-300 text-white font-mono text-xs font-bold tracking-widest uppercase px-5 py-2.5 rounded-sm flex items-center gap-1.5 cursor-pointer transition-colors shadow-xs"
+              >
+                {isProcessing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
+                Appraise Selected ({visibleSelectableRows.filter(row => row.originalFileIds.length > 0 && row.originalFileIds.every(id => selectedFileIds.includes(id))).length})
+              </button>
+            )}
+          </div>
+        </div>
 
-              {/* Grid of cropped works */}
-              <div className="grid grid-cols-2 gap-4">
-                {currentArtworks.map((art, idx) => (
-                  <div key={idx} className="bg-stone-50 border border-rosebery-border p-3 rounded-lg flex flex-col space-y-2 shadow-xs relative overflow-hidden group">
-                    <div className="relative aspect-square rounded-sm overflow-hidden bg-white border border-rosebery-border flex items-center justify-center">
-                      <img src={art.imagePreview} alt={art.label} className="max-w-full max-h-full object-contain" />
-                    </div>
-                    
-                    <div className="space-y-1 text-center">
-                      <span className="text-[10px] font-mono text-rosebery-primary font-semibold block truncate">
-                        {art.label}
-                      </span>
-                      
-                      <span className={`text-[8.5px] font-mono uppercase tracking-wider font-bold px-1.5 py-0.5 rounded-full border inline-block ${
-                        art.status === "appraising"
-                          ? "bg-amber-50 border-amber-200 text-amber-800 animate-pulse"
-                          : art.status === "completed"
-                            ? "bg-emerald-50 border-emerald-200 text-emerald-800"
-                            : art.status === "failed"
-                              ? "bg-rose-50 border-rose-200 text-rose-800"
-                              : "bg-white border-stone-200 text-stone-400"
-                      }`}>
-                        {art.status}
-                      </span>
-                    </div>
+        {/* Filters Panel */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 bg-stone-50 border border-rosebery-border/70 p-4 rounded-lg">
+          {/* Status Filter */}
+          <div className="space-y-1">
+            <label className="text-[10px] font-mono text-rosebery-primary font-bold uppercase tracking-wider block">
+              Filter by Status
+            </label>
+            <select
+              value={filterStatus}
+              onChange={(e) => setFilterStatus(e.target.value)}
+              className="w-full bg-white border border-rosebery-border rounded-xs px-3 py-2 text-xs text-rosebery-charcoal outline-hidden focus:border-rosebery-primary transition-all duration-200 cursor-pointer font-sans"
+            >
+              <option value="all">Show All Statuses</option>
+              <option value="new">New / Enqueued</option>
+              <option value="appraised">Appraised / Saved</option>
+              <option value="failed">Failed Appraisal</option>
+            </select>
+          </div>
 
-                    {art.report && (
-                      <div className="absolute inset-0 bg-[#4C0B2A]/90 text-white p-3 flex flex-col justify-between opacity-0 group-hover:opacity-100 transition-opacity duration-300 rounded-lg">
-                        <div className="space-y-1 text-[10px] leading-tight">
-                          <p className="font-serif font-bold truncate">{art.report.artworkTitle}</p>
-                          <p className="text-stone-300 font-sans truncate">{art.report.likelyArtist}</p>
-                          <p className="text-stone-300 font-sans font-semibold pt-1">{art.report.creationPeriod}</p>
-                        </div>
-                        <div className="bg-white text-rosebery-primary rounded-xs py-1 text-center text-[9px] font-mono font-bold">
-                          {art.report.auctionEstimate.formattedEstimate}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Real-time Logger Console */}
-          <div className="bg-rosebery-charcoal text-[#A8D39F] font-mono text-xs rounded-xl p-5 shadow-gallery-deep border border-stone-800 space-y-3.5 flex-1 flex flex-col">
-            <div className="flex justify-between items-center border-b border-stone-800 pb-2.5">
-              <span className="text-[10px] text-stone-400 uppercase tracking-widest font-bold font-sans">
-                BATCH CONSOLE LOGS
-              </span>
-              <div className="flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-                <span className="text-[9px] text-stone-400 font-sans uppercase">Online</span>
-              </div>
-            </div>
-            <div className="space-y-2 flex-1 min-h-[220px] overflow-y-auto flex flex-col-reverse text-[11px] leading-relaxed custom-scrollbar selection:bg-emerald-800 selection:text-white">
-              {logs.length === 0 ? (
-                <p className="text-stone-500 italic">No activity logged. Select folder source and start queue.</p>
-              ) : (
-                logs.map((log, idx) => (
-                  <p 
-                    key={idx} 
-                    className={
-                      log.includes("✓") || log.includes("Successfully")
-                        ? "text-emerald-400" 
-                        : log.includes("❌") || log.includes("Failed") || log.includes("Error")
-                          ? "text-rose-400 font-semibold"
-                          : log.includes("✂️")
-                            ? "text-amber-400"
-                            : "text-[#E3EAE0]"
-                    }
-                  >
-                    {log}
-                  </p>
-                ))
+          {/* Date Filter */}
+          <div className="space-y-1">
+            <label className="text-[10px] font-mono text-rosebery-primary font-bold uppercase tracking-wider block">
+              Filter by Upload Date
+            </label>
+            <div className="flex gap-1.5 items-center">
+              <input
+                type="date"
+                value={filterDate}
+                onChange={(e) => setFilterDate(e.target.value)}
+                className="w-full bg-white border border-rosebery-border rounded-xs px-3 py-2 text-xs text-rosebery-charcoal outline-hidden focus:border-rosebery-primary font-mono cursor-pointer"
+              />
+              {filterDate && (
+                <button
+                  type="button"
+                  onClick={() => setFilterDate("")}
+                  className="px-3 py-2 text-xs text-rosebery-muted hover:text-rosebery-primary font-mono font-bold bg-stone-100 hover:bg-stone-200/60 rounded-xs border border-rosebery-border cursor-pointer transition-colors"
+                >
+                  Clear
+                </button>
               )}
             </div>
           </div>
+
+          {/* Quick Metrics */}
+          <div className="flex items-center justify-end px-4 text-xs font-mono text-rosebery-muted bg-stone-100/50 rounded-xs border border-dashed border-rosebery-border/60 p-3">
+            <div className="space-y-1 text-right">
+              <div>Total Registry Items: <strong className="text-rosebery-charcoal">{filteredRegistry.length}</strong></div>
+              <div>Selected: <strong className="text-rosebery-primary">{selectedFileIds.length}</strong></div>
+            </div>
+          </div>
+        </div>
+
+        {/* Table container */}
+        <div className="overflow-x-auto border border-rosebery-border rounded-lg">
+          <table className="w-full text-left border-collapse">
+            <thead>
+              <tr className="bg-stone-50 border-b border-rosebery-border text-[10px] font-mono uppercase tracking-wider text-rosebery-primary font-bold">
+                <th className="p-3.5 w-10 text-center">
+                  <input
+                    type="checkbox"
+                    checked={isAllVisibleSelected}
+                    ref={(el) => {
+                      if (el) {
+                        el.indeterminate = !isAllVisibleSelected && visibleSelectableRows.some(row => 
+                          row.originalFileIds.some(id => selectedFileIds.includes(id))
+                        );
+                      }
+                    }}
+                    onChange={toggleSelectAll}
+                    disabled={visibleSelectableRows.length === 0}
+                    className="w-3.5 h-3.5 rounded-sm border-stone-300 text-rosebery-primary focus:ring-rosebery-primary/20 accent-rosebery-primary cursor-pointer"
+                  />
+                </th>
+                <th className="p-3.5 w-16">Thumbnail</th>
+                <th className="p-3.5">Filename</th>
+                <th className="p-3.5">Upload Date & Time</th>
+                <th className="p-3.5">Appraisal Method</th>
+                <th className="p-3.5 w-28">Status</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-rosebery-border/40 text-xs">
+              {filteredRegistry.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="p-8 text-center text-rosebery-muted italic bg-stone-50/20">
+                    No matching registry records found.
+                  </td>
+                </tr>
+              ) : (
+                filteredRegistry.map((row) => {
+                  const currentMethodDetail = row.methodsWithStatus.find(m => m.method === currentFriendlyMethod);
+                  const currentMethodStatus = currentMethodDetail ? currentMethodDetail.status : "new";
+                  const isSelectable = currentMethodStatus !== "appraised";
+                  const isChecked = row.originalFileIds.length > 0 && row.originalFileIds.every(id => selectedFileIds.includes(id));
+                  
+                  return (
+                    <tr 
+                      key={row.id}
+                      className={`hover:bg-rosebery-cream-bg/20 transition-colors duration-150 ${
+                        row.status === "processing" ? "bg-amber-50/15" : ""
+                      }`}
+                    >
+                      <td className="p-3.5 text-center">
+                        <input
+                          type="checkbox"
+                          checked={isChecked}
+                          disabled={!isSelectable || isProcessing}
+                          onChange={() => {
+                            if (isChecked) {
+                              setSelectedFileIds(prev => prev.filter(id => !row.originalFileIds.includes(id)));
+                            } else {
+                              let fileIds = [...row.originalFileIds];
+                              if (fileIds.length === 0) {
+                                const newFile = createBatchFileForHistoricalRow(row.name, row.thumbnailUrl, row.timestamp);
+                                setBatchFiles(prev => [...prev, newFile]);
+                                fileIds = [newFile.id];
+                              }
+                              setSelectedFileIds(prev => {
+                                const next = [...prev];
+                                fileIds.forEach(id => {
+                                  if (!next.includes(id)) next.push(id);
+                                });
+                                return next;
+                              });
+                            }
+                          }}
+                          className={`w-3.5 h-3.5 rounded-sm border-stone-300 focus:ring-rosebery-primary/20 accent-rosebery-primary ${
+                            isSelectable ? "cursor-pointer text-rosebery-primary" : "cursor-not-allowed opacity-40"
+                          }`}
+                        />
+                      </td>
+                      <td className="p-3.5">
+                        <div className="w-12 h-12 bg-white border border-rosebery-border rounded-sm flex items-center justify-center overflow-hidden shadow-xs">
+                          {row.thumbnailUrl ? (
+                            <img 
+                              src={row.thumbnailUrl} 
+                              alt="Scan Crop Preview" 
+                              className="w-full h-full object-contain"
+                              onError={(e) => {
+                                (e.target as HTMLElement).style.display = 'none';
+                              }}
+                            />
+                          ) : (
+                            <span className="text-[10px] font-mono text-stone-300">No Image</span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="p-3.5 font-medium text-rosebery-charcoal break-all max-w-[240px]">
+                        {row.name}
+                      </td>
+                      <td className="p-3.5 font-mono text-[11px] text-rosebery-muted">
+                        {row.timestamp}
+                      </td>
+                      <td className="p-3.5 font-mono text-[11px] text-rosebery-muted">
+                        <div className="flex flex-col space-y-2">
+                          {row.methodsWithStatus.map((m, idx) => (
+                            <div key={idx} className="min-h-6 flex items-center">
+                              {m.method}
+                            </div>
+                          ))}
+                        </div>
+                      </td>
+                      <td className="p-3.5">
+                        <div className="flex flex-col space-y-2">
+                          {row.methodsWithStatus.map((m, idx) => (
+                            <div key={idx} className="min-h-6 flex items-center">
+                              <span 
+                                title={m.status === "failed" ? m.error : undefined}
+                                className={`text-[10px] font-mono font-bold uppercase tracking-wider px-2.5 py-0.5 rounded-full border inline-flex items-center gap-1.5 ${
+                                  m.status === "appraised"
+                                    ? "bg-emerald-50 border-emerald-200 text-emerald-800"
+                                    : m.status === "failed"
+                                      ? "bg-rose-50 border-rose-200 text-rose-800 cursor-help"
+                                      : m.status === "processing"
+                                        ? "bg-amber-50 border-amber-200 text-amber-800 animate-pulse"
+                                        : "bg-blue-50 border-blue-200 text-blue-800" // new
+                                }`}
+                              >
+                                {m.status === "processing" ? (
+                                  <>
+                                    <Loader2 className="w-3 h-3 animate-spin" />
+                                    Appraising
+                                  </>
+                                ) : (
+                                  <>
+                                    {m.status}
+                                    {m.status === "failed" && <AlertCircle className="w-3 h-3 text-rose-600" />}
+                                  </>
+                                )}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
         </div>
       </div>
     </div>

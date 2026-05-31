@@ -58,11 +58,14 @@ export default function AppraiserNotesInput({
           onChange={(e) => setAppraisalMethod(e.target.value)}
           className="w-full bg-rosebery-card border border-rosebery-border focus:border-rosebery-primary focus:ring-1 focus:ring-rosebery-primary/20 rounded-sm p-2 text-xs text-rosebery-charcoal outline-hidden font-mono transition-all duration-200 cursor-pointer"
         >
-          {appraisalMethods.map((method) => (
-            <option key={method.id} value={method.id}>
-              {method.name} ({method.modelName})
-            </option>
-          ))}
+          {appraisalMethods.map((method) => {
+            const approach = method.promptKey.charAt(0).toUpperCase() + method.promptKey.slice(1);
+            return (
+              <option key={method.id} value={method.id}>
+                {approach} - {method.modelName}
+              </option>
+            );
+          })}
         </select>
         {selectedMethod && (
           <div className="mt-2 space-y-1 text-[10px] font-mono text-rosebery-muted leading-relaxed border-t border-rosebery-border/40 pt-1.5">
