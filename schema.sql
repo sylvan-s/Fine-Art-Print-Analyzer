@@ -17,6 +17,7 @@ CREATE TABLE users (
     email           TEXT UNIQUE NOT NULL,
     name            TEXT,
     password_hash   TEXT NOT NULL,
+    role            TEXT NOT NULL DEFAULT 'seller' CHECK (role IN ('seller', 'buyer', 'curator', 'admin')),
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     last_login_at   TIMESTAMPTZ
 );
@@ -169,3 +170,22 @@ FROM catalogues c
 LEFT JOIN items it            ON it.catalogue_id = c.id AND it.deleted_at IS NULL
 WHERE c.deleted_at IS NULL
 GROUP BY c.id, c.name, c.user_id, c.created_at;
+
+
+-- ------------------------------------------------------------
+-- APPRAISAL METHODS
+-- Configurations for built-in and custom prompts and models.
+-- ------------------------------------------------------------
+CREATE TABLE appraisal_methods (
+    id                      TEXT PRIMARY KEY,
+    name                    TEXT NOT NULL,
+    description             TEXT,
+    model_name              TEXT NOT NULL,
+    temperature             REAL NOT NULL,
+    prompt_key              TEXT NOT NULL,
+    prompt_text             TEXT,
+    image_quality           TEXT NOT NULL DEFAULT 'original',
+    include_auxiliary_scans BOOLEAN NOT NULL DEFAULT true,
+    provider                TEXT NOT NULL DEFAULT 'gemini',
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT now()
+);

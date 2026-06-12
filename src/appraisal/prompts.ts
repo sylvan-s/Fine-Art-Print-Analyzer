@@ -2,42 +2,13 @@
  * Prompt builders for modular print appraisers.
  */
 
-export type PromptKey = "standard" | "simplified" | "strict";
+export type PromptKey = "standard" | "simplified" | "strict" | "custom";
 
-export function getPrompt(
-  key: PromptKey,
-  currency: string,
-  userNotes?: string,
-  hasSignature?: boolean,
-  hasDamage?: boolean,
-  hasScale?: boolean
-): string {
-  switch (key) {
-    case "simplified":
-      return getSimplifiedPrompt(currency, userNotes, hasSignature, hasDamage, hasScale);
-    case "strict":
-      return getStrictPrompt(currency, userNotes, hasSignature, hasDamage, hasScale);
-    case "standard":
-    default:
-      return getStandardPrompt(currency, userNotes, hasSignature, hasDamage, hasScale);
-  }
-}
-
-/**
- * Standard Prompt: Complete academic hedonic pricing with detail visual evidence extraction
- */
-function getStandardPrompt(
-  currency: string,
-  userNotes?: string,
-  hasSignature?: boolean,
-  hasDamage?: boolean,
-  hasScale?: boolean
-): string {
-  return `Analyze this collection of photograph scans covering a single fine art print. Identify the artist, title, printing techniques, stamp/signatures, estimated auction value, and observe condition details visible in the photo.
+export const STANDARD_PROMPT_TEMPLATE = `Analyze this collection of photograph scans covering a single fine art print. Identify the artist, title, printing techniques, stamp/signatures, estimated auction value, and observe condition details visible in the photo.
 
 CURRENCY REQUIREMENTS:
-The user has configured their preferred valuation display currency as: "${currency}".
-You MUST evaluate and format all currency numbers, estimates, and sale prices strictly in "${currency}" (e.g. if GBP, use '£' and code 'GBP'; if EUR, use '€' and code 'EUR'; if USD, use '$' and code 'USD'). Output the numerical integer fields 'lowEstimate' and 'highEstimate' scaled into this "${currency}" currency.
+The user has configured their preferred valuation display currency as: "{currency}".
+You MUST evaluate and format all currency numbers, estimates, and sale prices strictly in "{currency}" (e.g. if GBP, use '£' and code 'GBP'; if EUR, use '€' and code 'EUR'; if USD, use '$' and code 'USD'). Output the numerical integer fields 'lowEstimate' and 'highEstimate' scaled into this "{currency}" currency.
 
 EDITION SIZE & PRINT NUMBER ANALYSIS (CRITICAL):
 You MUST search for, analyze, and describe any information indicating the print's specific number within the overall edition size (such as '45/100', 'Artist's Proof / AP', 'Hors Commerce / HC', 'Printer's Proof / PP', or an 'Open Edition / Unlimited print run'). Detail what this specific numbering represents in terms of collectors' exclusivity, market demand, historical rarity, and price impact. Return this written evaluation inside the "editionSizeAndPrintNumber" field.
@@ -61,16 +32,16 @@ You MUST benchmark the fine art print valuation, historical context summary, and
 
 When generating 'recentAuctionSales', ensure that:
 - It includes 2 or 3 highly realistic or real auction benchmark records.
-- At least one benchmark must explicitly represent a Roseberys London April auction transaction in "${currency}" currency.
+- At least one benchmark must explicitly represent a Roseberys London April auction transaction in "{currency}" currency.
 - Other benchmarks should represent Christie's, Sotheby's, Phillips, or Bonhams results matching this print, artist, technique, or period.
 
 Here is the list of files provided:
 - Primary overall photograph of the print artwork.
-${hasSignature ? "- A close-up scan focusing on the printmaker's signature/stamp/monogram/numbering block." : ""}
-${hasDamage ? "- A close-up detail showcasing potential physical paper damage (foxing, tears, creases, or mat stains)." : ""}
-${hasScale ? "- A coin measurement scale calibration image. Place your focus on the standard coin adjacent to the artwork to mathematically estimate real-world sheet dimensions." : ""}
+{signatureScan}
+{damageScan}
+{scaleScan}
 
-${userNotes ? `The user provided the following additional notes or inscriptions: "${userNotes}"` : ""}
+{userNotes}
 
 CURATOR EVIDENCE EXTRACTION MANDATE (CRITICAL):
 You MUST detect and locate 2 to 4 key visual evidence points in the primary print scan that back up your textual observations.
@@ -79,22 +50,11 @@ Other evidence points can include print plate borders, chemical foxing/staining 
 For each point, return a normalized bounding box \`box_2d\` in \`[ymin, xmin, ymax, xmax]\` format on a scale of \`0\` to \`1000\` (where 0 is top/left, 1000 is bottom/right relative to the primary scan's overall height and width). Along with the box, provide a short 2-3 word \`label\` naming the feature and a concise \`observation\` sentence explaining what is visible in that cropped region to justify your appraisal. Place this array in \`visualEvidenceHighlights\`.
 
 Conduct a meticulous evaluation of the authenticity factors (ink ridges, plate borders, chain lines, chemical foxing degradation) using the scholarly valuation guidelines above. Ensure you fill in the requested analytic parameters.`;
-}
 
-/**
- * Simplified Prompt: Standard visual description and direct auction estimation, skipping complex rules.
- */
-function getSimplifiedPrompt(
-  currency: string,
-  userNotes?: string,
-  hasSignature?: boolean,
-  hasDamage?: boolean,
-  hasScale?: boolean
-): string {
-  return `Perform a fast, standard visual identification and estimation of this fine art print. Identify the artist, title, estimated date of creation, and primary techniques.
+export const SIMPLIFIED_PROMPT_TEMPLATE = `Perform a fast, standard visual identification and estimation of this fine art print. Identify the artist, title, estimated date of creation, and primary techniques.
 
 CURRENCY REQUIREMENTS:
-preferred currency: "${currency}". All prices, estimates, and sales records MUST be formatted and scaled in "${currency}".
+preferred currency: "{currency}". All prices, estimates, and sales records MUST be formatted and scaled in "{currency}".
 
 GENERAL ESTIMATION RULES:
 Estimate the market value based on similar prints by the same artist. Give a low and high auction estimate.
@@ -102,31 +62,20 @@ Do not write long academic paragraphs; keep descriptions clean, objective, and b
 
 FILES PROVIDED:
 - Primary artwork photograph.
-${hasSignature ? "- Signature closeup." : ""}
-${hasDamage ? "- Damage closeup." : ""}
-${hasScale ? "- Scale calibration photo." : ""}
+{signatureScan}
+{damageScan}
+{scaleScan}
 
-${userNotes ? `User Notes: "${userNotes}"` : ""}
+{userNotes}
 
 EVIDENCE CROP REQUIREMENT:
 Locate 1 to 2 key visual elements in the scan (like the signature or central artwork region) using bounding boxes. Return them in visualEvidenceHighlights.
 For each, provide a box_2d [ymin, xmin, ymax, xmax] from 0 to 1000, a label, and a short observation.`;
-}
 
-/**
- * Strict / Defensive Prompt: Deep focus on condition penalty, authentication doubts, and reproduction warnings.
- */
-function getStrictPrompt(
-  currency: string,
-  userNotes?: string,
-  hasSignature?: boolean,
-  hasDamage?: boolean,
-  hasScale?: boolean
-): string {
-  return `Perform an extremely critical, defensive authenticity and condition analysis of this fine art print. You are acting as a skeptic who assumes any print might be a modern poster, digital reproduction, or bookplate facsimile unless proven otherwise by clear visual traits.
+export const STRICT_PROMPT_TEMPLATE = `Perform an extremely critical, defensive authenticity and condition analysis of this fine art print. You are acting as a skeptic who assumes any print might be a modern poster, digital reproduction, or bookplate facsimile unless proven otherwise by clear visual traits.
 
 CURRENCY REQUIREMENTS:
-Evaluate and format all estimates and sale records in: "${currency}".
+Evaluate and format all estimates and sale records in: "{currency}".
 
 DEFENSIVE RULES & PENALTIES:
 1. Condition Skepticism: Assume any spots, stains, or border issues represent structural paper decay. Penalize low and high estimates by 40% to 75% defensively if there are any signs of foxing, creases, light strike, or trimmed margins.
@@ -135,13 +84,74 @@ DEFENSIVE RULES & PENALTIES:
 
 FILES PROVIDED:
 - Primary overall photograph of the print.
-${hasSignature ? "- Close-up of signature/stamp." : ""}
-${hasDamage ? "- Close-up of damage/decay." : ""}
-${hasScale ? "- Scale calibration photo." : ""}
+{signatureScan}
+{damageScan}
+{scaleScan}
 
-${userNotes ? `User Inscriptions/Notes: "${userNotes}"` : ""}
+{userNotes}
 
 CURATOR EVIDENCE HIGHLIGHTS:
 Locate 3 to 4 points of visual evidence supporting either the printmaking techniques, signs of condition degradation, or authentication clues (like signature detail or plate marks). Return them in visualEvidenceHighlights.
 For each, provide a normalized bounding box \`box_2d\` in \`[ymin, xmin, ymax, xmax]\` format from 0 to 1000, a label, and a detailed skeptical observation.`;
+
+export function resolveCustomPrompt(
+  template: string,
+  currency: string,
+  userNotes?: string,
+  hasSignature?: boolean,
+  hasDamage?: boolean,
+  hasScale?: boolean
+): string {
+  let result = template;
+  
+  // Replace currency references
+  result = result.replace(/\{currency\}/g, currency);
+  result = result.replace(/\$\{currency\}/g, currency);
+  
+  // Replace userNotes conditional block
+  if (userNotes && userNotes.trim().length > 0) {
+    result = result.replace(/\{userNotes\}/g, `The user provided the following additional notes or inscriptions: "${userNotes}"`);
+  } else {
+    result = result.replace(/\{userNotes\}/g, "");
+  }
+  
+  // Replace aux scan lists
+  if (hasSignature) {
+    result = result.replace(/\{signatureScan\}/g, "- A close-up scan focusing on the printmaker's signature/stamp/monogram/numbering block.");
+  } else {
+    result = result.replace(/\{signatureScan\}/g, "");
+  }
+
+  if (hasDamage) {
+    result = result.replace(/\{damageScan\}/g, "- A close-up detail showcasing potential physical paper damage (foxing, tears, creases, or mat stains).");
+  } else {
+    result = result.replace(/\{damageScan\}/g, "");
+  }
+
+  if (hasScale) {
+    result = result.replace(/\{scaleScan\}/g, "- A coin measurement scale calibration image. Place your focus on the standard coin adjacent to the artwork to mathematically estimate real-world sheet dimensions.");
+  } else {
+    result = result.replace(/\{scaleScan\}/g, "");
+  }
+
+  // Double-check to remove any remaining cleanups or empty lines
+  return result.trim();
+}
+
+export function getPrompt(
+  key: PromptKey,
+  currency: string,
+  userNotes?: string,
+  hasSignature?: boolean,
+  hasDamage?: boolean,
+  hasScale?: boolean
+): string {
+  let template = STANDARD_PROMPT_TEMPLATE;
+  if (key === "simplified") {
+    template = SIMPLIFIED_PROMPT_TEMPLATE;
+  } else if (key === "strict") {
+    template = STRICT_PROMPT_TEMPLATE;
+  }
+  
+  return resolveCustomPrompt(template, currency, userNotes, hasSignature, hasDamage, hasScale);
 }

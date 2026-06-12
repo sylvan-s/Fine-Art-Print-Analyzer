@@ -51,6 +51,8 @@ interface ReportViewProps {
   setCurrency?: (currency: "USD" | "GBP" | "EUR") => void;
 
   onUpdateReport?: (updated: PrintAnalysisReport) => void;
+  userRole?: string;
+  curatorName?: string;
 }
 
 interface EvidenceCropProps {
@@ -147,7 +149,9 @@ export default function ReportView({
   isLoading,
   currency: propCurrency,
   setCurrency: propSetCurrency,
-  onUpdateReport
+  onUpdateReport,
+  userRole = "guest",
+  curatorName
 }: ReportViewProps) {
   const [localCurrency, setLocalCurrency] = React.useState<"USD" | "GBP" | "EUR">("USD");
   const currency = propCurrency || localCurrency;
@@ -227,6 +231,16 @@ export default function ReportView({
   const handleSave = () => {
     if (onUpdateReport) {
       const baseCurrency = report.auctionEstimate.currency || "USD";
+      
+      let finalModel = report.modelUsed || "gemini-2.5-flash";
+      const editedIndex = finalModel.indexOf(" (Edited by");
+      if (editedIndex !== -1) {
+        finalModel = finalModel.substring(0, editedIndex);
+      }
+      if (userRole === "curator") {
+        finalModel = `${finalModel} (Edited by ${curatorName || "Curator"})`;
+      }
+
       const updatedReport: PrintAnalysisReport = {
         ...report,
         artworkTitle: editTitle,
@@ -237,6 +251,7 @@ export default function ReportView({
         isLikelyReproductionOrPoster: editIsReproduction,
         reproductionExplanation: editReproductionExplanation,
         editionSizeAndPrintNumber: editEditionSize || undefined,
+        modelUsed: finalModel,
         auctionEstimate: {
           ...report.auctionEstimate,
           lowEstimate: editLowEstimate,
@@ -398,13 +413,15 @@ export default function ReportView({
             </>
           ) : (
             <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={() => setIsEditing(true)}
-                className="text-xs text-rosebery-primary hover:text-white font-bold flex items-center gap-1.5 border border-rosebery-primary hover:bg-rosebery-primary px-4 py-2 rounded-sm transition-all cursor-pointer bg-transparent font-mono uppercase tracking-wider"
-              >
-                Edit Report
-              </button>
+              {(userRole === "admin" || userRole === "curator") && (
+                <button
+                  type="button"
+                  onClick={() => setIsEditing(true)}
+                  className="text-xs text-rosebery-primary hover:text-white font-bold flex items-center gap-1.5 border border-rosebery-primary hover:bg-rosebery-primary px-4 py-2 rounded-sm transition-all cursor-pointer bg-transparent font-mono uppercase tracking-wider"
+                >
+                  Edit Report
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => window.print()}

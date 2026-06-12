@@ -12,7 +12,8 @@ import {
   Check,
   Layers,
   User,
-  Settings
+  Settings,
+  Award
 } from "lucide-react";
 import { PrintAnalysisReport, AnalysisHistoryItem, CatalogMetadata } from "./types";
 import ReportView from "./components/ReportView";
@@ -21,6 +22,7 @@ import AppraiserNotesInput from "./components/AppraiserNotesInput";
 import CatalogListView from "./components/CatalogListView";
 import BatchProcessor from "./components/BatchProcessor";
 import SettingsView from "./components/SettingsView";
+import AdminPromptPanel from "./components/AdminPromptPanel";
 import { 
   getHistoryDB, 
   setHistoryDB, 
@@ -185,7 +187,7 @@ const cropImageCanvas = (
 
 export default function App() {
   // Navigation / Workspace States
-  const [activeTab, setActiveTab] = useState<"sandbox" | "batch" | "history" | "settings">("sandbox");
+  const [activeTab, setActiveTab] = useState<"sandbox" | "batch" | "history" | "settings" | "admin">("sandbox");
   const [dragActive, setDragActive] = useState(false);
   
   // Input states
@@ -230,10 +232,14 @@ export default function App() {
   const [currentUser, setCurrentUser] = useState<string | null>(() => {
     return localStorage.getItem("print_analyzer_user");
   });
+  const [currentUserRole, setCurrentUserRole] = useState<string>("guest");
+  const [currentUserName, setCurrentUserName] = useState<string>("");
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [isSignUpMode, setIsSignUpMode] = useState(false);
   const [authUsername, setAuthUsername] = useState("");
   const [authPassword, setAuthPassword] = useState("");
+  const [authName, setAuthName] = useState("");
+  const [authRole, setAuthRole] = useState("seller");
   const [authError, setAuthError] = useState("");
   const [authSuccess, setAuthSuccess] = useState("");
   const [authLoading, setAuthLoading] = useState(false);
@@ -300,6 +306,20 @@ export default function App() {
         const username = localStorage.getItem("print_analyzer_user");
         if (username) {
           setCurrentUser(username);
+          
+          // Fetch user profile on boot to get role & name
+          try {
+            const profileRes = await fetch("/api/user/profile", {
+              headers: { "X-User-Header": username }
+            });
+            if (profileRes.ok) {
+              const profileData = await profileRes.json();
+              setCurrentUserRole(profileData.role || "seller");
+              setCurrentUserName(profileData.name || "");
+            }
+          } catch (profileErr) {
+            console.error("Failed to load user profile on boot:", profileErr);
+          }
           
           const listRes = await fetch("/api/user/catalog-list", {
             headers: { "X-User-Header": username }
@@ -613,10 +633,14 @@ export default function App() {
 
     const endpoint = isSignUpMode ? "/api/auth/signup" : "/api/auth/login";
     try {
+      const signupBody = isSignUpMode
+        ? { username: authUsername, password: authPassword, name: authName, role: authRole }
+        : { username: authUsername, password: authPassword };
+
       const res = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username: authUsername, password: authPassword })
+        body: JSON.stringify(signupBody)
       });
       const data = await res.json();
       if (!res.ok) {
@@ -631,6 +655,8 @@ export default function App() {
         await migrateGuestToUserDB(loggedInUser);
         localStorage.setItem("print_analyzer_user", loggedInUser);
         setCurrentUser(loggedInUser);
+        setCurrentUserRole(data.role || "seller");
+        setCurrentUserName(data.name || "");
 
         try {
           await fetch("/api/user/catalog-list", {
@@ -667,6 +693,8 @@ export default function App() {
         const loggedInUser = data.username;
         localStorage.setItem("print_analyzer_user", loggedInUser);
         setCurrentUser(loggedInUser);
+        setCurrentUserRole(data.role || "seller");
+        setCurrentUserName(data.name || "");
 
         const listRes = await fetch("/api/user/catalog-list", {
           headers: { "X-User-Header": loggedInUser }
@@ -707,6 +735,8 @@ export default function App() {
   const handleLogout = async () => {
     localStorage.removeItem("print_analyzer_user");
     setCurrentUser(null);
+    setCurrentUserRole("guest");
+    setCurrentUserName("");
     setIsHistoryLoading(true);
     try {
       const localList = await getCatalogsListDB();
@@ -1409,9 +1439,9 @@ export default function App() {
 
             {currentUser ? (
               <div className="flex items-center gap-1.5 bg-[#3D0821] p-1 rounded-sm border border-[#5A1033] text-white">
-                <span className="text-xs font-mono px-2.5 py-1 text-[#D7C3A2] font-semibold truncate max-w-[120px] flex items-center gap-1">
+                <span className="text-xs font-mono px-2.5 py-1 text-[#D7C3A2] font-semibold truncate max-w-[200px] flex items-center gap-1">
                   <User className="w-3 h-3 text-[#C0AA84]" />
-                  {currentUser}
+                  {currentUser} ({currentUserRole})
                 </span>
                 <button
                   onClick={handleLogout}
@@ -1477,6 +1507,19 @@ export default function App() {
                 </span>
               )}
             </button>
+            {currentUserRole === "admin" && (
+              <button
+                onClick={() => setActiveTab("admin")}
+                className={`flex-1 sm:flex-initial flex items-center justify-center gap-1.5 px-5 py-2.5 text-xs font-semibold uppercase tracking-wider transition-all duration-200 cursor-pointer ${
+                  activeTab === "admin"
+                    ? "bg-[#C0AA84] text-rosebery-charcoal rounded-sm shadow-gallery-deep"
+                    : "text-[#D2B4C2] hover:text-white"
+                }`}
+              >
+                <Award className="w-3.5 h-3.5" />
+                Prompt Manager
+              </button>
+            )}
           </div>
         </div>
       </header>
@@ -1621,6 +1664,8 @@ export default function App() {
                   currency={currency}
                   setCurrency={setCurrency}
                   onUpdateReport={handleUpdateReport}
+                  userRole={currentUserRole}
+                  curatorName={currentUserName || currentUser || "Curator"}
                 />
 
               </div>
@@ -1692,9 +1737,27 @@ export default function App() {
               setActiveTab("sandbox");
             }}
           />
+        ) : activeTab === "admin" ? (
+          <AdminPromptPanel 
+            currentUser={currentUser}
+            onMethodAdded={async () => {
+              try {
+                const res = await fetch("/api/appraisal-methods");
+                if (res.ok) {
+                  const data = await res.json();
+                  if (Array.isArray(data)) {
+                    setAppraisalMethods(data);
+                  }
+                }
+              } catch (err) {
+                console.error("Failed to refresh appraisal methods list:", err);
+              }
+            }}
+          />
         ) : (
           <SettingsView
             currentUser={currentUser}
+            userRole={currentUserRole}
             onLogout={handleLogout}
             catalogs={catalogs}
             setCatalogs={setCatalogs}
@@ -1719,6 +1782,8 @@ export default function App() {
                 setAuthSuccess("");
                 setAuthUsername("");
                 setAuthPassword("");
+                setAuthName("");
+                setAuthRole("seller");
               }}
               className="absolute top-4 right-4 text-stone-400 hover:text-rosebery-primary transition-colors cursor-pointer"
             >
@@ -1747,6 +1812,32 @@ export default function App() {
             )}
 
             <form onSubmit={handleAuthSubmit} className="space-y-4">
+              {isSignUpMode && (
+                <>
+                  <div className="space-y-1.5 animate-fadeIn">
+                    <label className="text-[10px] font-mono text-rosebery-primary font-semibold block">Full Name</label>
+                    <input
+                      type="text"
+                      placeholder="Enter display name (e.g. Agathe)"
+                      value={authName}
+                      onChange={(e) => setAuthName(e.target.value)}
+                      className="w-full bg-stone-50 border border-rosebery-border rounded-sm px-3 py-2 text-xs focus:outline-none focus:border-rosebery-primary focus:ring-1 focus:ring-rosebery-primary/25"
+                    />
+                  </div>
+                  <div className="space-y-1.5 animate-fadeIn">
+                    <label className="text-[10px] font-mono text-rosebery-primary font-semibold block">Role</label>
+                    <select
+                      value={authRole}
+                      onChange={(e) => setAuthRole(e.target.value)}
+                      className="w-full bg-stone-50 border border-rosebery-border rounded-sm px-3 py-2 text-xs focus:outline-none focus:border-rosebery-primary focus:ring-1 focus:ring-rosebery-primary/25 cursor-pointer font-sans"
+                    >
+                      <option value="seller">Seller (Default)</option>
+                      <option value="buyer">Buyer</option>
+                    </select>
+                  </div>
+                </>
+              )}
+
               <div className="space-y-1.5">
                 <label className="text-[10px] font-mono text-rosebery-primary font-semibold block">Username or Email</label>
                 <input

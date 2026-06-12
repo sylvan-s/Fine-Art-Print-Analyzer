@@ -20,6 +20,7 @@ import {
 
 interface SettingsViewProps {
   currentUser: string | null;
+  userRole?: string;
   onLogout: () => void;
   catalogs: CatalogMetadata[];
   setCatalogs: React.Dispatch<React.SetStateAction<CatalogMetadata[]>>;
@@ -31,6 +32,7 @@ interface SettingsViewProps {
 
 export default function SettingsView({
   currentUser,
+  userRole = "guest",
   onLogout,
   catalogs,
   setCatalogs,
@@ -209,14 +211,38 @@ export default function SettingsView({
         {/* Left Side: General Profile Card or Password Form */}
         <div className="md:col-span-6 space-y-6">
           {currentUser ? (
-            <div className="bg-rosebery-card border border-rosebery-border rounded-sm p-6 shadow-gallery-soft space-y-5">
-              <div className="border-b border-rosebery-border pb-3.5">
-                <div className="flex items-center gap-2">
-                  <Lock className="w-4 h-4 text-rosebery-gold" />
+            <div className="space-y-6 animate-fadeIn">
+              {/* Account Profile Details */}
+              <div className="bg-rosebery-card border border-rosebery-border rounded-sm p-6 shadow-gallery-soft space-y-3.5">
+                <div className="border-b border-rosebery-border pb-3 flex items-center gap-2">
+                  <User className="w-4 h-4 text-rosebery-gold" />
                   <h3 className="text-md font-serif text-rosebery-charcoal font-semibold">
-                    Change Password
+                    Account Profile
                   </h3>
                 </div>
+                <div className="space-y-2.5 text-xs">
+                  <div className="flex justify-between items-center">
+                    <span className="text-rosebery-muted">Registered Email:</span>
+                    <span className="font-semibold text-rosebery-charcoal">{currentUser}</span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-rosebery-muted">Assigned Role:</span>
+                    <span className="font-mono bg-rosebery-cream-bg border border-rosebery-border px-2 py-0.5 rounded-sm text-rosebery-primary font-bold uppercase tracking-wider">
+                      {userRole}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Change Password */}
+              <div className="bg-rosebery-card border border-rosebery-border rounded-sm p-6 shadow-gallery-soft space-y-5">
+                <div className="border-b border-rosebery-border pb-3.5">
+                  <div className="flex items-center gap-2">
+                    <Lock className="w-4 h-4 text-rosebery-gold" />
+                    <h3 className="text-md font-serif text-rosebery-charcoal font-semibold">
+                      Change Password
+                    </h3>
+                  </div>
                 <p className="text-[10px] text-rosebery-muted mt-0.5">
                   Update the credentials used to access your dealer cloud account.
                 </p>
@@ -288,6 +314,7 @@ export default function SettingsView({
                   Update Credentials
                 </button>
               </form>
+            </div>
             </div>
           ) : (
             <div className="bg-rosebery-card border border-rosebery-border rounded-sm p-6 shadow-gallery-soft space-y-6">

@@ -1,6 +1,6 @@
 import { GoogleGenAI, Type, HarmCategory, HarmBlockThreshold } from "@google/genai";
 import { PrintAnalysisReport } from "../types";
-import { getPrompt, PromptKey } from "./prompts";
+import { getPrompt, PromptKey, resolveCustomPrompt } from "./prompts";
 
 export interface AppraisalInput {
   imageBase64: string;
@@ -30,6 +30,7 @@ export interface AppraisalMethodConfig {
   modelName: string;
   temperature: number;
   promptKey: PromptKey;
+  promptText?: string;
   imageQuality: "original" | "medium" | "low";
   includeAuxiliaryScans: boolean;
   provider?: "gemini" | "anthropic";
@@ -125,15 +126,27 @@ export class ConfigurableGeminiAppraiser implements AppraisalMethod {
       });
     }
 
-    // 5. Build prompt using our prompts module
-    const textPrompt = getPrompt(
-      this.config.promptKey,
-      currency,
-      input.userNotes,
-      includeAux && !!input.signatureBase64,
-      includeAux && !!input.damageBase64,
-      includeAux && !!input.scaleBase64
-    );
+    // 5. Build prompt using our prompts module or custom template
+    let textPrompt: string;
+    if (this.config.promptText) {
+      textPrompt = resolveCustomPrompt(
+        this.config.promptText,
+        currency,
+        input.userNotes,
+        includeAux && !!input.signatureBase64,
+        includeAux && !!input.damageBase64,
+        includeAux && !!input.scaleBase64
+      );
+    } else {
+      textPrompt = getPrompt(
+        this.config.promptKey,
+        currency,
+        input.userNotes,
+        includeAux && !!input.signatureBase64,
+        includeAux && !!input.damageBase64,
+        includeAux && !!input.scaleBase64
+      );
+    }
 
     parts.push({ text: textPrompt });
 
@@ -486,15 +499,27 @@ export class ConfigurableClaudeAppraiser implements AppraisalMethod {
 
     const currency = input.currency || "USD";
 
-    // 5. Build prompt using our prompts module
-    const textPrompt = getPrompt(
-      this.config.promptKey,
-      currency,
-      input.userNotes,
-      includeAux && !!input.signatureBase64,
-      includeAux && !!input.damageBase64,
-      includeAux && !!input.scaleBase64
-    );
+    // 5. Build prompt using our prompts module or custom template
+    let textPrompt: string;
+    if (this.config.promptText) {
+      textPrompt = resolveCustomPrompt(
+        this.config.promptText,
+        currency,
+        input.userNotes,
+        includeAux && !!input.signatureBase64,
+        includeAux && !!input.damageBase64,
+        includeAux && !!input.scaleBase64
+      );
+    } else {
+      textPrompt = getPrompt(
+        this.config.promptKey,
+        currency,
+        input.userNotes,
+        includeAux && !!input.signatureBase64,
+        includeAux && !!input.damageBase64,
+        includeAux && !!input.scaleBase64
+      );
+    }
 
     contentBlocks.push({
       type: "text",
@@ -916,4 +941,12 @@ export function getAppraiser(methodName: string = "gemini-standard", aiClient?: 
     return new ConfigurableGeminiAppraiser(appraiser.config, aiClient);
   }
   return appraiser;
+}
+
+export function getAppraiserFromConfig(config: AppraisalMethodConfig, aiClient?: GoogleGenAI): AppraisalMethod {
+  if (config.provider === "anthropic") {
+    return new ConfigurableClaudeAppraiser(config);
+  } else {
+    return new ConfigurableGeminiAppraiser(config, aiClient);
+  }
 }

@@ -32,6 +32,12 @@ export const pool = new Pool({
   ssl: dbUrl ? { rejectUnauthorized: false } : undefined,
 });
 
+// Prevent unhandled error event crashes from idle database connections
+pool.on("error", (err) => {
+  console.error("Unexpected error on idle PostgreSQL client:", err);
+});
+
+
 export async function initDatabase() {
   if (!dbUrl) {
     console.warn("⚠️ DATABASE_URL is not defined. PostgreSQL integration is offline.");
@@ -65,6 +71,36 @@ export async function initDatabase() {
     } else {
       console.log("✓ PostgreSQL database schema is already initialized.");
     }
+
+    // Run migrations
+    console.log("Running schema migrations...");
+    await client.query(`
+      ALTER TABLE users 
+      ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'seller' CHECK (role IN ('seller', 'buyer', 'curator', 'admin'));
+    `);
+
+    await client.query(`
+      UPDATE users 
+      SET role = 'admin' 
+      WHERE email = 'sylvan_sitkey@hotmail.com';
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS appraisal_methods (
+          id                      TEXT PRIMARY KEY,
+          name                    TEXT NOT NULL,
+          description             TEXT,
+          model_name              TEXT NOT NULL,
+          temperature             REAL NOT NULL,
+          prompt_key              TEXT NOT NULL,
+          prompt_text             TEXT,
+          image_quality           TEXT NOT NULL DEFAULT 'original',
+          include_auxiliary_scans BOOLEAN NOT NULL DEFAULT true,
+          provider                TEXT NOT NULL DEFAULT 'gemini',
+          created_at              TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+    `);
+    console.log("✓ Schema migrations applied successfully.");
   } catch (err) {
     console.error("❌ Failed to initialize database schema:", err);
     throw err;

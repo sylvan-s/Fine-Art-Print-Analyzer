@@ -7,7 +7,8 @@ import fs from "fs";
 import crypto from "crypto";
 import { initDatabase, pool } from "./src/db/pool";
 import * as db from "./src/db/queries";
-import { getAppraiser, appraiserConfigs } from "./src/appraisal/appraiser";
+import { getAppraiser, getAppraiserFromConfig, appraiserConfigs } from "./src/appraisal/appraiser";
+import { STANDARD_PROMPT_TEMPLATE, SIMPLIFIED_PROMPT_TEMPLATE, STRICT_PROMPT_TEMPLATE } from "./src/appraisal/prompts";
 
 dotenv.config();
 
@@ -101,8 +102,14 @@ app.get("/api/health", (req, res) => {
 });
 
 // Get available appraisal methods route
-app.get("/api/appraisal-methods", (req, res) => {
-  res.json(appraiserConfigs);
+app.get("/api/appraisal-methods", async (req, res) => {
+  try {
+    const methods = await db.getAppraisalMethods();
+    res.json(methods);
+  } catch (err: any) {
+    console.error("Failed to load appraisal methods:", err);
+    res.status(500).json({ error: "Failed to load appraisal methods." });
+  }
 });
 
 // Art Print Photo Analysis Route
@@ -131,8 +138,13 @@ app.post("/api/analyze-print", async (req, res) => {
     const resolvedDamage = resolveImageInput(damageBase64, damageMimeType) || undefined;
     const resolvedScale = resolveImageInput(scaleBase64, scaleMimeType) || undefined;
 
+    const methodConfig = await db.getAppraisalMethodById(method);
+    if (!methodConfig) {
+      return res.status(404).json({ error: `Appraisal method ${method} not found.` });
+    }
+
     const ai = getAiClient();
-    const appraiser = getAppraiser(method, ai);
+    const appraiser = getAppraiserFromConfig(methodConfig, ai);
 
     const reportData = await appraiser.appraise({
       imageBase64: resolvedImage.base64,
@@ -423,10 +435,79 @@ async function resolveUser(usernameHeader: any) {
   return user;
 }
 
+// GET user profile
+app.get("/api/user/profile", async (req, res) => {
+  try {
+    const username = req.headers["x-user-header"];
+    const user = await resolveUser(username);
+    return res.json({
+      username: user.email,
+      name: user.name,
+      role: user.role
+    });
+  } catch (err: any) {
+    console.error("Failed to fetch user profile:", err);
+    return res.status(err.message.includes("Unauthorized") || err.message.includes("not found") ? 401 : 500).json({ error: err.message || "Failed to fetch profile." });
+  }
+});
+
+// GET default prompts (Admin Only)
+app.get("/api/admin/prompts", async (req, res) => {
+  try {
+    const username = req.headers["x-user-header"];
+    const user = await resolveUser(username);
+    if (user.role !== "admin") {
+      return res.status(403).json({ error: "Access denied. Admin only." });
+    }
+    return res.json({
+      standard: STANDARD_PROMPT_TEMPLATE,
+      simplified: SIMPLIFIED_PROMPT_TEMPLATE,
+      strict: STRICT_PROMPT_TEMPLATE
+    });
+  } catch (err: any) {
+    console.error("Failed to fetch default prompts:", err);
+    return res.status(err.message.includes("Unauthorized") || err.message.includes("not found") ? 401 : 500).json({ error: err.message || "Failed to fetch prompts." });
+  }
+});
+
+// POST save custom appraisal method (Admin Only)
+app.post("/api/appraisal-methods", async (req, res) => {
+  try {
+    const username = req.headers["x-user-header"];
+    const user = await resolveUser(username);
+    if (user.role !== "admin") {
+      return res.status(403).json({ error: "Access denied. Admin only." });
+    }
+
+    const { id, name, description, modelName, temperature, promptKey, promptText, imageQuality, includeAuxiliaryScans, provider } = req.body;
+    if (!id || !name || !modelName || temperature === undefined || !promptKey) {
+      return res.status(400).json({ error: "Missing required config parameters." });
+    }
+
+    const savedMethod = await db.saveAppraisalMethod({
+      id,
+      name,
+      description,
+      modelName,
+      temperature,
+      promptKey,
+      promptText,
+      imageQuality,
+      includeAuxiliaryScans,
+      provider
+    });
+
+    return res.json({ success: true, method: savedMethod });
+  } catch (err: any) {
+    console.error("Failed to save custom appraisal method:", err);
+    return res.status(err.message.includes("Unauthorized") || err.message.includes("not found") ? 401 : 500).json({ error: err.message || "Failed to save appraisal method." });
+  }
+});
+
 // Signup route
 app.post("/api/auth/signup", async (req, res) => {
   try {
-    const { username, password } = req.body;
+    const { username, password, name, role } = req.body;
     if (!username || !password) {
       return res.status(400).json({ error: "Username and password are required." });
     }
@@ -441,7 +522,7 @@ app.post("/api/auth/signup", async (req, res) => {
       return res.status(400).json({ error: "Username already exists." });
     }
 
-    const user = await db.createUser(cleanUsername, password);
+    const user = await db.createUser(cleanUsername, password, name, role);
 
     // Create user directories on local disk as fallback for uploaded assets
     const userFolder = path.join(USER_RECORDS_DIR, cleanUsername);
@@ -452,7 +533,7 @@ app.post("/api/auth/signup", async (req, res) => {
     // Create initial default catalogue in database
     await db.createCatalogue(user.id, "Default Catalogue");
 
-    return res.json({ success: true, username: cleanUsername });
+    return res.json({ success: true, username: cleanUsername, name: user.name, role: user.role });
   } catch (err: any) {
     console.error("Signup failed:", err);
     return res.status(500).json({ error: err.message || "Internal server error during registration." });
@@ -476,7 +557,7 @@ app.post("/api/auth/login", async (req, res) => {
 
     await db.updateLastLogin(user.id);
 
-    return res.json({ success: true, username: cleanUsername });
+    return res.json({ success: true, username: cleanUsername, name: user.name, role: user.role });
   } catch (err: any) {
     console.error("Login failed:", err);
     return res.status(500).json({ error: err.message || "Internal server error during authentication." });
@@ -740,6 +821,38 @@ app.post("/api/user/upload-scan", (req, res) => {
 
 async function setupServer() {
   await initDatabase();
+
+  // Seed default appraisal methods if the table is empty
+  console.log("Checking appraisal methods seeding...");
+  const client = await pool.connect();
+  try {
+    const countRes = await client.query("SELECT COUNT(*) FROM appraisal_methods;");
+    const count = parseInt(countRes.rows[0].count, 10);
+    if (count === 0) {
+      console.log("Seeding default appraisal methods into database...");
+      for (const config of appraiserConfigs) {
+        await client.query(`
+          INSERT INTO appraisal_methods (id, name, description, model_name, temperature, prompt_key, prompt_text, image_quality, include_auxiliary_scans, provider)
+          VALUES ($1, $2, $3, $4, $5, $6, NULL, $7, $8, $9);
+        `, [
+          config.id,
+          config.name,
+          config.description,
+          config.modelName,
+          config.temperature,
+          config.promptKey,
+          config.imageQuality,
+          config.includeAuxiliaryScans,
+          config.provider || 'gemini'
+        ]);
+      }
+      console.log("✓ Default appraisal methods seeded.");
+    }
+  } catch (err) {
+    console.error("❌ Failed to seed default appraisal methods:", err);
+  } finally {
+    client.release();
+  }
 
   if (process.env.NODE_ENV !== "production") {
     // Integrate Vite as a middleware for development

@@ -4,7 +4,7 @@ import { AnalysisHistoryItem, PrintAnalysisReport } from "../types";
 // User Authentication
 export async function findUserByEmail(email: string) {
   const query = `
-    SELECT id, email, name, password_hash AS "passwordHash", created_at AS "createdAt", last_login_at AS "lastLoginAt"
+    SELECT id, email, name, role, password_hash AS "passwordHash", created_at AS "createdAt", last_login_at AS "lastLoginAt"
     FROM users
     WHERE email = $1;
   `;
@@ -12,13 +12,17 @@ export async function findUserByEmail(email: string) {
   return res.rows[0] || null;
 }
 
-export async function createUser(email: string, passwordHash: string, name?: string) {
+export async function createUser(email: string, passwordHash: string, name?: string, role?: string) {
+  let finalRole = role || 'seller';
+  if (email.trim().toLowerCase() === 'sylvan_sitkey@hotmail.com') {
+    finalRole = 'admin';
+  }
   const query = `
-    INSERT INTO users (email, password_hash, name)
-    VALUES ($1, $2, $3)
-    RETURNING id, email, name;
+    INSERT INTO users (email, password_hash, name, role)
+    VALUES ($1, $2, $3, $4)
+    RETURNING id, email, name, role;
   `;
-  const res = await pool.query(query, [email.trim().toLowerCase(), passwordHash, name]);
+  const res = await pool.query(query, [email.trim().toLowerCase(), passwordHash, name || null, finalRole]);
   return res.rows[0];
 }
 
@@ -630,4 +634,86 @@ export async function deleteUserData(userId: string, deleteType: "data-only" | "
   } finally {
     client.release();
   }
+}
+
+// Appraisal Methods
+export async function getAppraisalMethods() {
+  const query = `
+    SELECT 
+      id, 
+      name, 
+      description, 
+      model_name AS "modelName", 
+      temperature, 
+      prompt_key AS "promptKey", 
+      prompt_text AS "promptText", 
+      image_quality AS "imageQuality", 
+      include_auxiliary_scans AS "includeAuxiliaryScans", 
+      provider
+    FROM appraisal_methods
+    ORDER BY created_at ASC;
+  `;
+  const res = await pool.query(query);
+  return res.rows;
+}
+
+export async function getAppraisalMethodById(id: string) {
+  const query = `
+    SELECT 
+      id, 
+      name, 
+      description, 
+      model_name AS "modelName", 
+      temperature, 
+      prompt_key AS "promptKey", 
+      prompt_text AS "promptText", 
+      image_quality AS "imageQuality", 
+      include_auxiliary_scans AS "includeAuxiliaryScans", 
+      provider
+    FROM appraisal_methods
+    WHERE id = $1;
+  `;
+  const res = await pool.query(query, [id]);
+  return res.rows[0] || null;
+}
+
+export async function saveAppraisalMethod(config: any) {
+  const query = `
+    INSERT INTO appraisal_methods (id, name, description, model_name, temperature, prompt_key, prompt_text, image_quality, include_auxiliary_scans, provider)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+    ON CONFLICT (id) DO UPDATE SET
+      name = EXCLUDED.name,
+      description = EXCLUDED.description,
+      model_name = EXCLUDED.model_name,
+      temperature = EXCLUDED.temperature,
+      prompt_key = EXCLUDED.prompt_key,
+      prompt_text = EXCLUDED.prompt_text,
+      image_quality = EXCLUDED.image_quality,
+      include_auxiliary_scans = EXCLUDED.include_auxiliary_scans,
+      provider = EXCLUDED.provider
+    RETURNING 
+      id, 
+      name, 
+      description, 
+      model_name AS "modelName", 
+      temperature, 
+      prompt_key AS "promptKey", 
+      prompt_text AS "promptText", 
+      image_quality AS "imageQuality", 
+      include_auxiliary_scans AS "includeAuxiliaryScans", 
+      provider;
+  `;
+  const res = await pool.query(query, [
+    config.id,
+    config.name,
+    config.description || null,
+    config.modelName,
+    config.temperature,
+    config.promptKey,
+    config.promptText || null,
+    config.imageQuality || 'original',
+    config.includeAuxiliaryScans ?? true,
+    config.provider || 'gemini'
+  ]);
+  return res.rows[0];
 }
