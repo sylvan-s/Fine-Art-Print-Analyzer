@@ -780,37 +780,10 @@ app.post("/api/user/upload-scan", (req, res) => {
       return res.status(400).json({ error: "Missing imageBase64 data." });
     }
 
-    const cleanUsername = username.trim().toLowerCase();
-    const userImagesFolder = path.join(USER_RECORDS_DIR, cleanUsername, "images");
-    if (!fs.existsSync(userImagesFolder)) {
-      fs.mkdirSync(userImagesFolder, { recursive: true });
-    }
-
-    // Decode base64
-    const matches = imageBase64.match(/^data:image\/(\w+);base64,(.+)$/);
-    let ext = "jpg";
-    let base64DataStr = imageBase64;
-    
-    if (matches && matches.length === 3) {
-      ext = matches[1];
-      if (ext === "jpeg") ext = "jpg";
-      base64DataStr = matches[2];
-    } else {
-      base64DataStr = imageBase64.replace(/^data:image\/\w+;base64,/, "");
-    }
-
-    const buffer = Buffer.from(base64DataStr, "base64");
-    const fileUuid = crypto.randomUUID();
-    const filename = `${fileUuid}.${ext}`;
-    const filePath = path.join(userImagesFolder, filename);
-
-    fs.writeFileSync(filePath, buffer);
-
-    const imageUrl = `/api/user-images/${cleanUsername}/images/${filename}`;
-    return res.json({ success: true, imageUrl });
+    return res.json({ success: true, imageUrl: imageBase64 });
   } catch (err: any) {
-    console.error("Failed to save user scan image:", err);
-    return res.status(500).json({ error: err.message || "Failed to upload scan image." });
+    console.error("Failed to process user scan image:", err);
+    return res.status(500).json({ error: err.message || "Failed to process scan image." });
   }
 });
 
