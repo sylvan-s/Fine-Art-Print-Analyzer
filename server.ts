@@ -560,11 +560,7 @@ app.post("/api/auth/login", async (req, res) => {
     return res.json({ success: true, username: cleanUsername, name: user.name, role: user.role });
   } catch (err: any) {
     console.error("Login failed:", err);
-    return res.status(500).json({ 
-      error: err.message || "Internal server error during authentication.",
-      stack: err.stack,
-      details: err
-    });
+    return res.status(500).json({ error: "Internal server error during authentication." });
   }
 });
 
