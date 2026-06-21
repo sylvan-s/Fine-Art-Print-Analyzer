@@ -147,16 +147,12 @@ export default function BatchProcessor({
 
   const currentFriendlyMethod = useMemo(() => {
     const selectedMethodConfig = appraisalMethods.find(m => m.id === appraisalMethod);
-    return selectedMethodConfig 
-      ? `${selectedMethodConfig.promptKey.charAt(0).toUpperCase() + selectedMethodConfig.promptKey.slice(1)} - ${selectedMethodConfig.modelName}`
-      : appraisalMethod;
+    return selectedMethodConfig ? selectedMethodConfig.name : appraisalMethod;
   }, [appraisalMethod, appraisalMethods]);
 
   const createBatchFileForHistoricalRow = (rowName: string, rowThumbnail: string, rowTimestamp: string): BatchFile => {
     const selectedMethodConfig = appraisalMethods.find(m => m.id === appraisalMethod);
-    const friendlyMethod = selectedMethodConfig 
-      ? `${selectedMethodConfig.promptKey.charAt(0).toUpperCase() + selectedMethodConfig.promptKey.slice(1)} - ${selectedMethodConfig.modelName}`
-      : appraisalMethod;
+    const friendlyMethod = selectedMethodConfig ? selectedMethodConfig.name : appraisalMethod;
 
     const originalItemsForGroup = itemDatabaseRef.current.filter(
       item => extractOriginalFilename(item.imageFileName).toLowerCase() === rowName.toLowerCase()
@@ -876,10 +872,22 @@ export default function BatchProcessor({
       const origName = extractOriginalFilename(item.imageFileName);
       const key = origName.toLowerCase();
       
-      const approach = item.report.promptVersion || "standard";
-      const formattedApproach = approach.charAt(0).toUpperCase() + approach.slice(1);
-      const model = item.report.modelUsed || "gemini-2.5-flash";
-      const methodStr = `${formattedApproach} - ${model}`;
+      const promptVersion = item.report?.promptVersion || "standard";
+      const modelUsed = item.report?.modelUsed || "gemini-2.5-flash";
+      
+      let methodStr = `${promptVersion.charAt(0).toUpperCase() + promptVersion.slice(1)} - ${modelUsed}`;
+      if (promptVersion === "3stage" || modelUsed.includes("3-Stage")) {
+        const config = appraisalMethods.find(m => {
+          if (modelUsed.toLowerCase().includes("claude") || modelUsed.toLowerCase().includes("anthropic")) {
+            return m.id === "claude-3stage";
+          }
+          return m.id === "gemini-3stage";
+        });
+        if (config) methodStr = config.name;
+      } else {
+        const config = appraisalMethods.find(m => m.promptKey === promptVersion && m.modelName === modelUsed);
+        if (config) methodStr = config.name;
+      }
 
       if (!groups[key]) {
         groups[key] = {
@@ -964,10 +972,22 @@ export default function BatchProcessor({
 
       // 1. First, populate from original (appraised) items in database
       g.originalItems.forEach(item => {
-        const approach = item.report.promptVersion || "standard";
-        const formattedApproach = approach.charAt(0).toUpperCase() + approach.slice(1);
-        const model = item.report.modelUsed || "gemini-2.5-flash";
-        const methodStr = `${formattedApproach} - ${model}`;
+        const promptVersion = item.report?.promptVersion || "standard";
+        const modelUsed = item.report?.modelUsed || "gemini-2.5-flash";
+        
+        let methodStr = `${promptVersion.charAt(0).toUpperCase() + promptVersion.slice(1)} - ${modelUsed}`;
+        if (promptVersion === "3stage" || modelUsed.includes("3-Stage")) {
+          const config = appraisalMethods.find(m => {
+            if (modelUsed.toLowerCase().includes("claude") || modelUsed.toLowerCase().includes("anthropic")) {
+              return m.id === "claude-3stage";
+            }
+            return m.id === "gemini-3stage";
+          });
+          if (config) methodStr = config.name;
+        } else {
+          const config = appraisalMethods.find(m => m.promptKey === promptVersion && m.modelName === modelUsed);
+          if (config) methodStr = config.name;
+        }
         methodMap[methodStr] = { status: "appraised" };
       });
 
@@ -1146,10 +1166,9 @@ export default function BatchProcessor({
                 disabled={isProcessing}
               >
                 {appraisalMethods.map((method) => {
-                  const approach = method.promptKey.charAt(0).toUpperCase() + method.promptKey.slice(1);
                   return (
                     <option key={method.id} value={method.id}>
-                      {approach} - {method.modelName}
+                      {method.name}
                     </option>
                   );
                 })}

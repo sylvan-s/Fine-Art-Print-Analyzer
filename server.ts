@@ -126,7 +126,7 @@ app.post("/api/analyze-print", async (req, res) => {
       scaleBase64,
       scaleMimeType,
       currency = "USD",
-      method = "gemini-standard"
+      method = "gemini-3stage"
     } = req.body;
 
     const resolvedImage = resolveImageInput(imageBase64, mimeType);
@@ -795,34 +795,39 @@ app.post("/api/user/upload-scan", (req, res) => {
 async function setupServer() {
   await initDatabase();
 
-  // Seed default appraisal methods if the table is empty
-  console.log("Checking appraisal methods seeding...");
+  // Seed/update default appraisal methods
+  console.log("Syncing default appraisal methods with database...");
   const client = await pool.connect();
   try {
-    const countRes = await client.query("SELECT COUNT(*) FROM appraisal_methods;");
-    const count = parseInt(countRes.rows[0].count, 10);
-    if (count === 0) {
-      console.log("Seeding default appraisal methods into database...");
-      for (const config of appraiserConfigs) {
-        await client.query(`
-          INSERT INTO appraisal_methods (id, name, description, model_name, temperature, prompt_key, prompt_text, image_quality, include_auxiliary_scans, provider)
-          VALUES ($1, $2, $3, $4, $5, $6, NULL, $7, $8, $9);
-        `, [
-          config.id,
-          config.name,
-          config.description,
-          config.modelName,
-          config.temperature,
-          config.promptKey,
-          config.imageQuality,
-          config.includeAuxiliaryScans,
-          config.provider || 'gemini'
-        ]);
-      }
-      console.log("✓ Default appraisal methods seeded.");
+    console.log("Upserting default appraisal methods into database...");
+    for (const config of appraiserConfigs) {
+      await client.query(`
+        INSERT INTO appraisal_methods (id, name, description, model_name, temperature, prompt_key, prompt_text, image_quality, include_auxiliary_scans, provider)
+        VALUES ($1, $2, $3, $4, $5, $6, NULL, $7, $8, $9)
+        ON CONFLICT (id) DO UPDATE SET
+          name = EXCLUDED.name,
+          description = EXCLUDED.description,
+          model_name = EXCLUDED.model_name,
+          temperature = EXCLUDED.temperature,
+          prompt_key = EXCLUDED.prompt_key,
+          image_quality = EXCLUDED.image_quality,
+          include_auxiliary_scans = EXCLUDED.include_auxiliary_scans,
+          provider = EXCLUDED.provider;
+      `, [
+        config.id,
+        config.name,
+        config.description,
+        config.modelName,
+        config.temperature,
+        config.promptKey,
+        config.imageQuality,
+        config.includeAuxiliaryScans,
+        config.provider || 'gemini'
+      ]);
     }
+    console.log("✓ Default appraisal methods synchronized.");
   } catch (err) {
-    console.error("❌ Failed to seed default appraisal methods:", err);
+    console.error("❌ Failed to sync default appraisal methods:", err);
   } finally {
     client.release();
   }

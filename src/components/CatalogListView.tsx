@@ -202,11 +202,42 @@ export default function CatalogListView({
 
   const uniqueModels = React.useMemo(() => {
     const models = new Set<string>();
+    // Pre-populate with known system methods so they are always available for selection
+    models.add("Gemini 3-Stage Pipeline");
+    models.add("Claude 3-Stage Pipeline");
+    models.add("Gemini Standard");
+    models.add("Gemini Pro (2.5)");
+    models.add("Gemini Pro (Stable)");
+    models.add("Gemini 3.1 Pro (Preview)");
+    models.add("Gemini Creative");
+    models.add("Gemini Strict / Skeptic");
+    models.add("Gemini Simplified");
+    models.add("Gemini Low Resolution");
+    models.add("Gemini Medium Resolution");
+    models.add("Gemini (No Aux Scans)");
+    models.add("Claude Sonnet (4.6)");
+    models.add("Claude Opus (4.8)");
+
     catalogHistory.forEach(item => {
       const approach = item.report.promptVersion || "standard";
-      const formattedApproach = approach.charAt(0).toUpperCase() + approach.slice(1);
       const model = item.report.modelUsed || "gemini-2.5-flash";
-      models.add(`${formattedApproach} - ${model}`);
+      
+      let methodStr = `${approach.charAt(0).toUpperCase() + approach.slice(1)} - ${model}`;
+      if (approach === "3stage" || model.includes("3-Stage")) {
+        if (model.toLowerCase().includes("claude") || model.toLowerCase().includes("anthropic")) {
+          methodStr = "Claude 3-Stage Pipeline";
+        } else {
+          methodStr = "Gemini 3-Stage Pipeline";
+        }
+      } else {
+        if (model === "gemini-3.5-flash" && approach === "standard") methodStr = "Gemini Standard";
+        else if (model === "gemini-2.5-pro" && approach === "standard") methodStr = "Gemini Pro (2.5)";
+        else if (model === "gemini-pro-latest" && approach === "standard") methodStr = "Gemini Pro (Stable)";
+        else if (model === "gemini-3.1-pro-preview" && approach === "standard") methodStr = "Gemini 3.1 Pro (Preview)";
+        else if (model === "claude-sonnet-4-6" && approach === "standard") methodStr = "Claude Sonnet (4.6)";
+        else if (model === "claude-opus-4-8" && approach === "standard") methodStr = "Claude Opus (4.8)";
+      }
+      models.add(methodStr);
     });
     return Array.from(models);
   }, [catalogHistory]);
@@ -241,9 +272,24 @@ export default function CatalogListView({
       // Appraisal Method Filter
       if (filterAppraisalMethod !== "all") {
         const approach = item.report.promptVersion || "standard";
-        const formattedApproach = approach.charAt(0).toUpperCase() + approach.slice(1);
         const model = item.report.modelUsed || "gemini-2.5-flash";
-        const itemMethod = `${formattedApproach} - ${model}`;
+        
+        let itemMethod = `${approach.charAt(0).toUpperCase() + approach.slice(1)} - ${model}`;
+        if (approach === "3stage" || model.includes("3-Stage")) {
+          if (model.toLowerCase().includes("claude") || model.toLowerCase().includes("anthropic")) {
+            itemMethod = "Claude 3-Stage Pipeline";
+          } else {
+            itemMethod = "Gemini 3-Stage Pipeline";
+          }
+        } else {
+          if (model === "gemini-3.5-flash" && approach === "standard") itemMethod = "Gemini Standard";
+          else if (model === "gemini-2.5-pro" && approach === "standard") itemMethod = "Gemini Pro (2.5)";
+          else if (model === "gemini-pro-latest" && approach === "standard") itemMethod = "Gemini Pro (Stable)";
+          else if (model === "gemini-3.1-pro-preview" && approach === "standard") itemMethod = "Gemini 3.1 Pro (Preview)";
+          else if (model === "claude-sonnet-4-6" && approach === "standard") itemMethod = "Claude Sonnet (4.6)";
+          else if (model === "claude-opus-4-8" && approach === "standard") itemMethod = "Claude Opus (4.8)";
+        }
+        
         if (itemMethod !== filterAppraisalMethod) return false;
       }
       

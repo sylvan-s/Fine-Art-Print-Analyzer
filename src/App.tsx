@@ -204,7 +204,7 @@ export default function App() {
 
   const [currency, setCurrency] = useState<"USD" | "GBP" | "EUR">("USD");
   const [appraisalMethods, setAppraisalMethods] = useState<any[]>([]);
-  const [appraisalMethod, setAppraisalMethod] = useState<string>("gemini-standard");
+  const [appraisalMethod, setAppraisalMethod] = useState<string>("gemini-3stage");
   const [userNotes, setUserNotes] = useState("");
   const [provenanceNotes, setProvenanceNotes] = useState("");
   const [conditionNotes, setConditionNotes] = useState("");
